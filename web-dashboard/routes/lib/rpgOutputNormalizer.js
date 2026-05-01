@@ -27,7 +27,7 @@ function startsLikeJson(text) {
 function normalizeRpgOutput(rawText) {
     const cleaned = stripEnvelope(rawText);
     if (!/\[GOLEM_(?:MEMORY|ACTION|REPLY)\]/i.test(cleaned)) {
-        return cleaned;
+        return startsLikeJson(cleaned) ? unwrapCodeFence(cleaned) : cleaned;
     }
 
     const parsed = ResponseParser.parse(cleaned);

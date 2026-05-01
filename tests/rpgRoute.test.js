@@ -53,6 +53,30 @@ describe('RPG generateContent route helpers', () => {
         expect(JSON.parse(output).name).toBe('青衣無名');
     });
 
+    test('normalizeRpgOutput unwraps fenced JSON without Golem tags', () => {
+        const { normalizeRpgOutput } = require('../web-dashboard/routes/lib/rpgOutputNormalizer');
+
+        const raw = `[[BEGIN:fb6y]]
+\`\`\`json
+{
+  "narrative": "深夜的拉巴納斯塔地下道。",
+  "story_roadmap": ["第一階段", "第二階段"],
+  "player_status": {
+    "name": "梵恩",
+    "attributes": { "strength": 12, "vitality": 10, "dexterity": 14 }
+  },
+  "is_dead": false
+}
+\`\`\`
+[[END:fb6y]]`;
+
+        const output = normalizeRpgOutput(raw);
+
+        expect(output.trim().startsWith('{')).toBe(true);
+        expect(output).not.toContain('```');
+        expect(JSON.parse(output).player_status.name).toBe('梵恩');
+    });
+
     test('buildRpgPrompt adds a hard boundary against normal chat protocol', () => {
         const { _private } = require('../web-dashboard/routes/api.rpg');
 

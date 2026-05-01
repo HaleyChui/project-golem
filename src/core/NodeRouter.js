@@ -7,7 +7,7 @@ const SkillArchitect = require('../managers/SkillArchitect');
 const wikiSkill = require('../skills/core/wiki');
 const { toolsetManager, SCENE_TOOLSETS } = require('../managers/ToolsetManager');
 const { hookSystem } = require('./HookSystem'); // ⚡ [OpenHarness-inspired]
-const { buildStockSnapshotInjection } = require('../services/StockDashboardSnapshot');
+const { buildFreshStockSnapshotInjection } = require('../services/StockDashboardSnapshot');
 
 // ✨ [v9.1 Addon] 初始化技能架構師 (Web Gemini Mode)
 // 注意：這裡不傳入 Model，因為我們將在 NodeRouter 中傳入 Web Brain
@@ -221,7 +221,7 @@ class NodeRouter {
             const enrichedText = [
                 userRequest,
                 '',
-                buildStockSnapshotInjection(),
+                await buildFreshStockSnapshotInjection({ trigger: 'telegram-stock-dashboard-command' }),
                 '',
                 '請輸出：市場概況、主要強弱標的、技術指標重點、風險提醒、接下來可觀察的價位或事件。不要做保證式投資建議。',
             ].join('\n');

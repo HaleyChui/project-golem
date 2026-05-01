@@ -2,6 +2,7 @@ const express = require('express');
 const {
     saveStockSnapshot,
     readStockSnapshot,
+    refreshStockSnapshot,
 } = require('../../src/services/StockDashboardSnapshot');
 
 const CACHE_TTL_MS = 45 * 1000;
@@ -527,6 +528,26 @@ module.exports = function registerStockRoutes() {
             });
         } catch (error) {
             return res.status(400).json({ error: error.message });
+        }
+    });
+
+    router.post('/api/stocks/snapshot/refresh', async (req, res) => {
+        try {
+            const snapshot = await refreshStockSnapshot({
+                snapshot: req.body?.snapshot,
+                symbols: req.body?.symbols,
+                selectedSymbol: req.body?.selectedSymbol,
+                selectedRange: req.body?.selectedRange,
+                marketFilter: req.body?.marketFilter,
+                trigger: req.body?.trigger || 'dashboard-refresh',
+            });
+            return res.json({
+                success: true,
+                snapshot,
+            });
+        } catch (error) {
+            console.error('[Stocks] Failed to refresh snapshot:', error);
+            return res.status(error.statusCode || 500).json({ error: error.message });
         }
     });
 

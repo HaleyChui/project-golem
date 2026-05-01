@@ -3279,17 +3279,8 @@ pendingCombatEncounter = data.pendingCombatEncounter || null;
 function parseAIResponse(responseText) {
     try {
         const cleanResponseText = stripGolemProtocol(responseText);
-        const jsonBlockMatch = cleanResponseText.match(/```(?:json)?\s*(\{[\s\S]*?\})\s*```/i);
-        if (jsonBlockMatch) {
-            return JSON.parse(jsonBlockMatch[1]);
-        }
-        
-        const objectMatch = cleanResponseText.match(/\{[\s\S]*\}/);
-        if (objectMatch) {
-            return JSON.parse(objectMatch[0]);
-        }
-
-        return JSON.parse(cleanResponseText);
+        const jsonText = extractJsonPayload(cleanResponseText, ['{']);
+        return JSON.parse(jsonText || cleanResponseText);
     } catch (e) {
         console.error("JSON Parse Error:", e, "\nRaw Text:", responseText);
         throw new Error(i18nData[currentLang]['error.parseJSON']);
@@ -3330,18 +3321,145 @@ function looksLikeJsonPayload(text) {
     return cleaned.startsWith('{') || cleaned.startsWith('[');
 }
 
-function extractJsonArray(responseText) {
-    const cleanResponseText = stripGolemProtocol(responseText);
-    const fencedMatch = cleanResponseText.match(/```(?:json)?\s*(\[[\s\S]*?\])\s*```/i);
-    if (fencedMatch) return fencedMatch[1];
+function extractBalancedJson(text, startIndex) {
+    const source = String(text || '');
+    const openChar = source[startIndex];
+    const closeChar = openChar === '{' ? '}' : ']';
+    const stack = [];
+    let inString = false;
+    let escaped = false;
 
-    const start = cleanResponseText.indexOf('[');
-    const end = cleanResponseText.lastIndexOf(']');
-    if (start !== -1 && end > start) {
-        return cleanResponseText.slice(start, end + 1);
+    for (let i = startIndex; i < source.length; i++) {
+        const ch = source[i];
+
+        if (inString) {
+            if (escaped) {
+                escaped = false;
+            } else if (ch === '\\') {
+                escaped = true;
+            } else if (ch === '"') {
+                inString = false;
+            }
+            continue;
+        }
+
+        if (ch === '"') {
+            inString = true;
+            continue;
+        }
+
+        if (ch === '{' || ch === '[') {
+            stack.push(ch);
+        } else if (ch === '}' || ch === ']') {
+            const expectedOpen = ch === '}' ? '{' : '[';
+            if (stack.pop() !== expectedOpen) return '';
+            if (stack.length === 0) return source.slice(startIndex, i + 1);
+        }
     }
 
     return '';
+}
+
+function extractJsonPayload(responseText, allowedStarts = ['{', '[']) {
+    const cleanResponseText = stripGolemProtocol(responseText);
+    const fencedMatch = cleanResponseText.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+    const candidates = fencedMatch ? [fencedMatch[1], cleanResponseText] : [cleanResponseText];
+
+    for (const candidate of candidates) {
+        for (let i = 0; i < candidate.length; i++) {
+            if (allowedStarts.includes(candidate[i])) {
+                const payload = extractBalancedJson(candidate, i);
+                if (payload) return payload;
+            }
+        }
+    }
+
+    return '';
+}
+
+function extractJsonArray(responseText) {
+    return extractJsonPayload(responseText, ['[']);
+}
+
+function normalizeInitialGameData(rawGameData) {
+    const t = i18nData[currentLang] || {};
+    const gameData = (rawGameData && typeof rawGameData === 'object' && !Array.isArray(rawGameData)) ? rawGameData : {};
+
+    if (!gameData.player_status || typeof gameData.player_status !== 'object') {
+        throw new Error('AI 回傳缺少 player_status，無法建立世界。');
+    }
+
+    const status = gameData.player_status;
+    const attrs = status.attributes && typeof status.attributes === 'object' ? status.attributes : {};
+    status.attributes = {
+        strength: Number.isFinite(Number(attrs.strength)) ? Number(attrs.strength) : 10,
+        vitality: Number.isFinite(Number(attrs.vitality)) ? Number(attrs.vitality) : 10,
+        dexterity: Number.isFinite(Number(attrs.dexterity)) ? Number(attrs.dexterity) : 10
+    };
+
+    status.name = status.name || (currentPreviewData && currentPreviewData.name) || t['game.defaultPlayerName'] || 'Adventurer';
+    status.level = Number.isFinite(Number(status.level)) && Number(status.level) > 0 ? Number(status.level) : 1;
+    status.currency = Number.isFinite(Number(status.currency)) ? Number(status.currency) : 0;
+    status.currency_name = status.currency_name || t['hud.currency'] || 'Gold';
+
+    const exp = status.experience && typeof status.experience === 'object' ? status.experience : {};
+    status.experience = {
+        current: Number.isFinite(Number(exp.current)) ? Number(exp.current) : 0,
+        max: Number.isFinite(Number(exp.max)) && Number(exp.max) > 0 ? Number(exp.max) : 100
+    };
+
+    status.status_bars = normalizeStatusBars(Array.isArray(status.status_bars) ? status.status_bars : [])
+        .map(bar => ({
+            ...bar,
+            name: bar.name || 'Status',
+            value: Number.isFinite(Number(bar.value)) ? Number(bar.value) : 0,
+            max_value: Number.isFinite(Number(bar.max_value)) && Number(bar.max_value) > 0 ? Number(bar.max_value) : 100,
+            type: bar.type || 'other'
+        }));
+
+    if (!status.status_bars.some(bar => bar.type === 'hp')) {
+        status.status_bars.unshift({ name: '生命值', value: 100, max_value: 100, type: 'hp' });
+    }
+
+    status.traits = Array.isArray(status.traits) ? status.traits : [];
+    status.skills = fixAndMergeSkills(Array.isArray(status.skills) ? status.skills : []);
+
+    if (!status.equipment || typeof status.equipment !== 'object' || Array.isArray(status.equipment)) {
+        status.equipment = {};
+    }
+    ['weapon', 'armor', 'accessory'].forEach(slot => {
+        const item = status.equipment[slot];
+        if (item && typeof item === 'object') status.equipment[slot] = item.name || item.item_name || 'None';
+        if (!status.equipment[slot]) status.equipment[slot] = 'None';
+    });
+    delete status.equipment.items;
+    delete status.equipment.Item;
+    delete status.equipment.item;
+
+    status.inventory = Array.isArray(status.inventory) ? status.inventory : [];
+    status.inventory = status.inventory
+        .filter(item => item !== null && item !== undefined)
+        .map(item => typeof item === 'string' ? { name: item, type: 'consumable', description: '' } : item)
+        .filter(item => item && typeof item === 'object' && item.name);
+
+    status.quests = Array.isArray(status.quests) ? status.quests : [];
+
+    gameData.narrative = gameData.narrative || t['game.defaultNarrative'] || '';
+    gameData.summary = gameData.summary || t['game.defaultSummary'] || '';
+    gameData.story_roadmap = Array.isArray(gameData.story_roadmap) ? gameData.story_roadmap : [];
+    gameData.total_turn_limit = Number.isFinite(Number(gameData.total_turn_limit)) ? Number(gameData.total_turn_limit) : 80;
+    gameData.time_of_day = gameData.time_of_day === 'night' ? 'night' : 'day';
+    gameData.choices = Array.isArray(gameData.choices) ? gameData.choices : [];
+    gameData.choices = gameData.choices
+        .map((choice, index) => typeof choice === 'string' ? { text: choice, action: `choice_${index + 1}` } : choice)
+        .filter(choice => choice && choice.text && choice.action);
+
+    if (gameData.shop_cache && typeof gameData.shop_cache === 'object') {
+        if (!Array.isArray(gameData.shop_cache.goods_for_sale)) gameData.shop_cache.goods_for_sale = [];
+        if (!Array.isArray(gameData.shop_cache.player_inventory_valuation)) gameData.shop_cache.player_inventory_valuation = [];
+    }
+
+    return gameData;
 }
 
 // ✅ 修改後的 callTextAPI (報錯時顯示 Key 編號)
@@ -3638,7 +3756,7 @@ Example:
 \`\`\``;
 
 try {
-        const gameData = await callTextAPI(prompt);
+        const gameData = normalizeInitialGameData(await callTextAPI(prompt));
 // [優化] 強制載入預覽資料 (Hard Overwrite)
         // 確保玩家確認的數值絕對不會被 AI 修改
         if (currentPreviewData && gameData.player_status) {

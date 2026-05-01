@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
     Bar,
     BarChart,
@@ -122,8 +122,38 @@ type SearchResponse = {
     results?: SearchResult[];
 };
 
+type SnapshotRefreshResponse = {
+    snapshot?: StockDashboardSnapshot;
+};
+
+type StockDashboardSnapshot = {
+    source: string;
+    dataStatus: string;
+    marketFilter: MarketFilter;
+    selectedRange: RangeKey;
+    selected: StockQuote | null;
+    indicators: StockIndicators | null;
+    watchlist: StockQuote[];
+    breadth: {
+        advancers: number;
+        decliners: number;
+        averageMove: number;
+        totalTurnover: number;
+        count: number;
+    };
+    quoteErrors: Array<{ symbol: string; error: string }>;
+    generatedAt: string;
+    savedAt?: string;
+    refresh?: {
+        trigger: string;
+        status: string;
+        previousSavedAt: string | null;
+    };
+};
+
 const WATCHLIST_STORAGE_KEY = "golem-stock-watchlist-v1";
 const DEFAULT_WATCHLIST = ["2330.TW", "0050.TW", "2454.TW", "AAPL", "NVDA", "TSM"];
+const AUTO_REFRESH_MS = 60 * 1000;
 const RANGE_MAP: Record<RangeKey, { range: string; interval: string }> = {
     "1D": { range: "1d", interval: "5m" },
     "1M": { range: "1mo", interval: "1d" },
@@ -373,6 +403,7 @@ export default function StockAnalysisPage() {
     const [isSending, setIsSending] = useState(false);
     const [sentSnapshot, setSentSnapshot] = useState(false);
     const [lastUpdatedAt, setLastUpdatedAt] = useState("");
+    const lastInteractionRefreshRef = useRef(0);
 
     useEffect(() => {
         localStorage.setItem(WATCHLIST_STORAGE_KEY, JSON.stringify(watchlist));
@@ -390,9 +421,11 @@ export default function StockAnalysisPage() {
             if (nextQuotes.length && !nextQuotes.some((quote) => quote.yahooSymbol === selectedSymbol)) {
                 setSelectedSymbol(nextQuotes[0].yahooSymbol);
             }
+            return nextQuotes;
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             toast.error(isEnglish ? "Failed to load quotes" : "讀取行情失敗", message);
+            return [];
         } finally {
             setIsLoadingQuotes(false);
         }
@@ -415,15 +448,24 @@ export default function StockAnalysisPage() {
                     isEnglish ? "Yahoo Finance returned no valid OHLCV points for this symbol/range." : "Yahoo Finance 沒有回傳這個標的/區間可用的 OHLCV 資料。"
                 );
             }
+            return data.history || null;
         } catch (error) {
             setHistoryPoints([]);
             setIndicators(null);
             const message = error instanceof Error ? error.message : String(error);
             toast.warning(isEnglish ? "Failed to load chart" : "讀取走勢失敗", message);
+            return null;
         } finally {
             setIsLoadingHistory(false);
         }
     }, [isEnglish, toast]);
+
+    const refreshDashboard = useCallback(async () => {
+        await Promise.all([
+            loadQuotes(),
+            loadHistory(selectedSymbol, range),
+        ]);
+    }, [loadHistory, loadQuotes, range, selectedSymbol]);
 
     useEffect(() => {
         loadQuotes();
@@ -432,6 +474,29 @@ export default function StockAnalysisPage() {
     useEffect(() => {
         loadHistory(selectedSymbol, range);
     }, [loadHistory, range, selectedSymbol]);
+
+    useEffect(() => {
+        const tick = () => {
+            if (typeof document !== "undefined" && document.hidden) return;
+            refreshDashboard();
+        };
+        const timer = window.setInterval(tick, AUTO_REFRESH_MS);
+        const handleVisibilityChange = () => {
+            if (!document.hidden) refreshDashboard();
+        };
+        document.addEventListener("visibilitychange", handleVisibilityChange);
+        return () => {
+            window.clearInterval(timer);
+            document.removeEventListener("visibilitychange", handleVisibilityChange);
+        };
+    }, [refreshDashboard]);
+
+    const refreshOnInteraction = useCallback(() => {
+        const now = Date.now();
+        if (now - lastInteractionRefreshRef.current < AUTO_REFRESH_MS) return;
+        lastInteractionRefreshRef.current = now;
+        refreshDashboard();
+    }, [refreshDashboard]);
 
     useEffect(() => {
         const safeQuery = query.trim();
@@ -476,7 +541,7 @@ export default function StockAnalysisPage() {
         return { advancers, decliners, averageMove, totalTurnover, count: source.length };
     }, [quotes, visibleQuotes]);
 
-    const snapshot = useMemo(() => ({
+    const snapshot = useMemo<StockDashboardSnapshot>(() => ({
         source: "dashboard-stock-analysis",
         dataStatus: "live-market-data",
         marketFilter: selectedMarket,
@@ -530,11 +595,33 @@ export default function StockAnalysisPage() {
         setIsSending(true);
         setSentSnapshot(false);
         try {
+            await refreshDashboard();
+            let snapshotForGolem = snapshot;
+            try {
+                const refreshed = await apiPost<SnapshotRefreshResponse>(apiUrl("/api/stocks/snapshot/refresh"), {
+                    snapshot,
+                    symbols: watchlist,
+                    selectedSymbol,
+                    selectedRange: range,
+                    marketFilter: selectedMarket,
+                    trigger: "dashboard-before-golem-analysis",
+                });
+                if (refreshed.snapshot) {
+                    snapshotForGolem = refreshed.snapshot;
+                    setLastUpdatedAt(refreshed.snapshot.generatedAt || new Date().toISOString());
+                }
+            } catch (refreshError) {
+                const message = refreshError instanceof Error ? refreshError.message : String(refreshError);
+                toast.warning(
+                    isEnglish ? "Using current snapshot" : "使用目前快照",
+                    isEnglish ? `Live refresh failed: ${message}` : `即時刷新失敗：${message}`
+                );
+            }
             const message = `${isEnglish ? "Analyze the current live stock dashboard snapshot." : "請分析目前即時股市行情看板快照。"}
 
 ${isEnglish ? "Use the supplied structured dashboard data only. Mention data freshness and do not provide guaranteed financial advice." : "請以提供的結構化看板資料為準，說明資料新鮮度，且不要做保證式投資建議。"}
 
-${JSON.stringify(snapshot, null, 2)}`;
+${JSON.stringify(snapshotForGolem, null, 2)}`;
             await apiPost(apiUrl("/api/chat"), { golemId: activeGolem, message });
             setSentSnapshot(true);
             toast.success(
@@ -550,7 +637,7 @@ ${JSON.stringify(snapshot, null, 2)}`;
     };
 
     return (
-        <div className="min-h-full bg-background text-foreground">
+        <div className="min-h-full bg-background text-foreground" onPointerDown={refreshOnInteraction}>
             <div className="mx-auto flex w-full max-w-[1680px] flex-col gap-5 p-4 sm:p-6">
                 <section className="flex flex-col gap-4 border-b border-border/70 pb-5 lg:flex-row lg:items-end lg:justify-between">
                     <div className="space-y-2">
@@ -589,8 +676,8 @@ ${JSON.stringify(snapshot, null, 2)}`;
                                 </button>
                             ))}
                         </div>
-                        <Button variant="secondary" onClick={loadQuotes} disabled={isLoadingQuotes}>
-                            {isLoadingQuotes ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCcw className="mr-2 h-4 w-4" />}
+                        <Button variant="secondary" onClick={refreshDashboard} disabled={isLoadingQuotes || isLoadingHistory}>
+                            {isLoadingQuotes || isLoadingHistory ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCcw className="mr-2 h-4 w-4" />}
                             {isEnglish ? "Refresh" : "刷新"}
                         </Button>
                     </div>
