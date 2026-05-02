@@ -9,7 +9,8 @@ import {
     BrainCircuit, Cpu, Palette, Sparkles, User, Settings2,
     PlayCircle, Search, Tag, X, Filter, Zap, CheckCircle2,
     ChevronRight, Moon, BookOpen, Plus, Info, Eye,
-    AlertCircle
+    AlertCircle, FolderOpen, ArrowUp, RotateCcw, HardDrive,
+    Copy, SkipForward
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { apiGet, apiPost } from "@/lib/api-client";
@@ -25,6 +26,37 @@ interface Preset {
     tone: string;
     tags: string[];
     skills: string[];
+}
+
+interface MemoryBrowseEntry {
+    name: string;
+    path: string;
+    hasMemory?: boolean;
+}
+
+interface MemoryBrowseResponse {
+    currentPath: string;
+    parentPath: string | null;
+    entries: MemoryBrowseEntry[];
+    hasMemory?: boolean;
+    memoryPath?: string | null;
+    roots?: { label: string; path: string }[];
+}
+
+interface MemoryImportResponse {
+    success?: boolean;
+    error?: string;
+    sourcePath?: string;
+    targetPath?: string;
+    backupPath?: string | null;
+    summary?: {
+        files: number;
+        directories: number;
+        bytes: number;
+        skipped?: { path: string; reason: string }[];
+    };
+    skipped?: { path: string; reason: string }[];
+    warning?: string;
 }
 
 const ICON_MAP: Record<string, React.ComponentType<{ className?: string }>> = {
@@ -101,6 +133,12 @@ export default function GolemSetupPage() {
     const [skills, setSkills] = useState<string[]>([]);
     const [isLoading, setIsLoading] = useState(false);
     const [showRoleHelp, setShowRoleHelp] = useState(false);
+    const [memoryMode, setMemoryMode] = useState<"fresh" | "reincarnate">("fresh");
+    const [memoryPathInput, setMemoryPathInput] = useState("");
+    const [memoryBrowser, setMemoryBrowser] = useState<MemoryBrowseResponse | null>(null);
+    const [isBrowsingMemory, setIsBrowsingMemory] = useState(false);
+    const [isImportingMemory, setIsImportingMemory] = useState(false);
+    const [memoryImportResult, setMemoryImportResult] = useState<MemoryImportResponse | null>(null);
 
     // Fetch templates from backend
     useEffect(() => {
@@ -116,12 +154,6 @@ export default function GolemSetupPage() {
         };
         fetchTemplates();
     }, []);
-
-    useEffect(() => {
-        if (templates.length > 0 && !activePresetId) {
-            applyPreset(templates[0]);
-        }
-    }, [activePresetId, templates]);
 
     // Get all unique tags
     const allTags = Array.from(new Set(templates.flatMap(t => t.tags || [])));
@@ -143,20 +175,74 @@ export default function GolemSetupPage() {
         }
     }, [activeGolemStatus, activeGolem, isLoadingGolems, router]);
 
-    const applyPreset = (preset: Preset) => {
+    const applyPreset = useCallback((preset: Preset) => {
         setActivePresetId(preset.id);
         setAiName(preset.aiName);
         setUserName(preset.userName);
         setRole(preset.role);
         setTone(preset.tone);
         setSkills(preset.skills || []);
-    };
+    }, []);
+
+    useEffect(() => {
+        if (templates.length > 0 && !activePresetId) {
+            applyPreset(templates[0]);
+        }
+    }, [activePresetId, applyPreset, templates]);
 
     const toggleSkill = useCallback((skill: string) => {
         setSkills(prev =>
             prev.includes(skill) ? prev.filter(s => s !== skill) : [...prev, skill]
         );
     }, []);
+
+    const browseMemoryPath = useCallback(async (targetPath?: string) => {
+        try {
+            setIsBrowsingMemory(true);
+            const query = targetPath ? `?path=${encodeURIComponent(targetPath)}` : "";
+            const data = await apiGet<MemoryBrowseResponse>(`/api/golems/memory-reincarnation/browse${query}`);
+            setMemoryBrowser(data);
+            setMemoryPathInput(data.currentPath);
+        } catch (e) {
+            const message = e instanceof Error ? e.message : "無法讀取資料夾";
+            toast.error("資料夾瀏覽失敗", message);
+        } finally {
+            setIsBrowsingMemory(false);
+        }
+    }, [toast]);
+
+    const importReincarnatedMemory = useCallback(async () => {
+        if (!memoryPathInput.trim()) {
+            toast.error("缺少來源資料夾", "請選擇或輸入舊專案資料夾路徑。");
+            return;
+        }
+
+        try {
+            setIsImportingMemory(true);
+            setMemoryImportResult(null);
+            const data = await apiPost<MemoryImportResponse>("/api/golems/memory-reincarnation/import", {
+                sourcePath: memoryPathInput.trim(),
+            });
+
+            if (data.success) {
+                setMemoryImportResult(data);
+                const skippedCount = data.summary?.skipped?.length ?? 0;
+                if (skippedCount > 0) {
+                    toast.warning("記憶轉生部分完成", `已複製 ${data.summary?.files ?? 0} 個檔案，另有 ${skippedCount} 個項目因權限或特殊類型被跳過。`);
+                } else {
+                    toast.success("記憶轉生完成", `已複製 ${data.summary?.files ?? 0} 個記憶檔案。`);
+                }
+            } else {
+                setMemoryImportResult(data);
+                toast.error("記憶轉生失敗", data.error || "無法複製舊記憶。");
+            }
+        } catch (e) {
+            const message = e instanceof Error ? e.message : "匯入過程中發生錯誤";
+            toast.error("記憶轉生失敗", message);
+        } finally {
+            setIsImportingMemory(false);
+        }
+    }, [memoryPathInput, toast]);
 
     // Extra skills that exist in ALL_AVAILABLE_SKILLS but not in the template
     const extraSkillsToShow = ALL_AVAILABLE_SKILLS.filter(s => !skills.includes(s));
@@ -166,6 +252,11 @@ export default function GolemSetupPage() {
 
         if (!aiName.trim() || !userName.trim()) {
             toast.error("欄位缺失", "請填寫 AI 名稱與您的稱呼");
+            return;
+        }
+
+        if (memoryMode === "reincarnate" && !memoryImportResult?.success) {
+            toast.warning("尚未完成記憶轉生", "請先匯入舊記憶，或選擇略過並開啟全新代理人。");
             return;
         }
 
@@ -224,7 +315,7 @@ export default function GolemSetupPage() {
                     </p>
 
                     {/* 流程步驟指示 */}
-                    <div className="flex items-center gap-2 mt-6 text-sm">
+                    <div className="flex flex-wrap items-center justify-center gap-2 mt-6 text-sm">
                         <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-primary/10 border border-primary/30 text-primary font-medium">
                             <span className="w-5 h-5 rounded-full bg-primary text-primary-foreground text-[11px] font-bold flex items-center justify-center">1</span>
                             選擇模板
@@ -235,8 +326,23 @@ export default function GolemSetupPage() {
                             調整設定
                         </div>
                         <ChevronRight className="w-4 h-4 text-muted-foreground" />
+                        <div className={cn(
+                            "flex items-center gap-1.5 px-3 py-1.5 rounded-full border font-medium",
+                            memoryImportResult?.success
+                                ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-500"
+                                : "bg-primary/10 border-primary/30 text-primary"
+                        )}>
+                            <span className={cn(
+                                "w-5 h-5 rounded-full text-[11px] font-bold flex items-center justify-center",
+                                memoryImportResult?.success
+                                    ? "bg-emerald-500 text-white"
+                                    : "bg-primary text-primary-foreground"
+                            )}>3</span>
+                            記憶轉生
+                        </div>
+                        <ChevronRight className="w-4 h-4 text-muted-foreground" />
                         <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-secondary border border-border text-muted-foreground font-medium">
-                            <span className="w-5 h-5 rounded-full bg-secondary border border-border text-muted-foreground text-[11px] font-bold flex items-center justify-center">3</span>
+                            <span className="w-5 h-5 rounded-full bg-secondary border border-border text-muted-foreground text-[11px] font-bold flex items-center justify-center">4</span>
                             啟動
                         </div>
                     </div>
@@ -393,6 +499,203 @@ export default function GolemSetupPage() {
                                             />
                                         ))}
                                     </div>
+                                </div>
+                            )}
+                        </div>
+
+                        {/* Section 4: Memory Reincarnation */}
+                        <div className="bg-card/80 backdrop-blur-sm border border-border rounded-2xl p-5 shadow-xl relative overflow-hidden">
+                            <div className="absolute inset-x-0 top-0 h-0.5 bg-gradient-to-r from-amber-500 via-primary to-cyan-500" />
+                            <div className="flex items-center justify-between gap-3 mb-4">
+                                <div className="flex items-center gap-2">
+                                    <RotateCcw className="w-4 h-4 text-amber-500" />
+                                    <h3 className="text-sm font-semibold text-foreground uppercase tracking-wide">記憶轉生</h3>
+                                </div>
+                                {memoryImportResult?.success && (
+                                    <span className="inline-flex items-center gap-1 text-[11px] text-emerald-500 font-medium bg-emerald-500/10 border border-emerald-500/30 px-2 py-0.5 rounded-full">
+                                        <CheckCircle2 className="w-3 h-3" />
+                                        已匯入
+                                    </span>
+                                )}
+                            </div>
+
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-4">
+                                <button
+                                    type="button"
+                                    onClick={() => setMemoryMode("reincarnate")}
+                                    className={cn(
+                                        "text-left p-3 rounded-xl border transition-all",
+                                        memoryMode === "reincarnate"
+                                            ? "bg-primary/10 border-primary/40 text-foreground"
+                                            : "bg-secondary/30 border-border/60 text-muted-foreground hover:text-foreground hover:border-border"
+                                    )}
+                                >
+                                    <div className="flex items-center gap-2 text-sm font-semibold">
+                                        <Copy className="w-4 h-4 text-primary" />
+                                        從舊專案帶入
+                                    </div>
+                                    <p className="text-xs text-muted-foreground mt-1 leading-relaxed">
+                                        選擇舊資料夾，自動複製 golem_memory。
+                                    </p>
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        setMemoryMode("fresh");
+                                        setMemoryImportResult(null);
+                                    }}
+                                    className={cn(
+                                        "text-left p-3 rounded-xl border transition-all",
+                                        memoryMode === "fresh"
+                                            ? "bg-primary/10 border-primary/40 text-foreground"
+                                            : "bg-secondary/30 border-border/60 text-muted-foreground hover:text-foreground hover:border-border"
+                                    )}
+                                >
+                                    <div className="flex items-center gap-2 text-sm font-semibold">
+                                        <SkipForward className="w-4 h-4 text-primary" />
+                                        略過並新生
+                                    </div>
+                                    <p className="text-xs text-muted-foreground mt-1 leading-relaxed">
+                                        不帶入舊記憶，開啟全新的代理人。
+                                    </p>
+                                </button>
+                            </div>
+
+                            <div className="p-3 bg-amber-500/10 border border-amber-500/25 rounded-xl text-xs text-amber-200/90 leading-relaxed mb-4">
+                                舊版資料轉移後，部分記憶、技能索引、瀏覽器狀態或腳本功能可能因新版本結構差異而無法完整保留。
+                            </div>
+
+                            {memoryMode === "reincarnate" && (
+                                <div className="space-y-3 animate-in fade-in duration-200">
+                                    <div>
+                                        <label htmlFor="memoryPath" className="block text-xs font-medium text-muted-foreground mb-1.5 uppercase tracking-wide">
+                                            舊專案資料夾或 golem_memory 路徑
+                                        </label>
+                                        <div className="flex gap-2">
+                                            <input
+                                                id="memoryPath"
+                                                value={memoryPathInput}
+                                                onChange={(e) => setMemoryPathInput(e.target.value)}
+                                                className="min-w-0 flex-1 bg-secondary/40 border border-border rounded-xl px-4 py-2.5 text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary transition-all placeholder:text-muted-foreground/50"
+                                                placeholder="例如：/Users/you/Desktop/project-golem"
+                                            />
+                                            <Button
+                                                type="button"
+                                                variant="secondary"
+                                                onClick={() => browseMemoryPath(memoryPathInput || undefined)}
+                                                disabled={isBrowsingMemory}
+                                                className="shrink-0"
+                                                title="瀏覽資料夾"
+                                            >
+                                                {isBrowsingMemory ? (
+                                                    <div className="w-4 h-4 border-2 border-muted-foreground/30 border-t-muted-foreground rounded-full animate-spin" />
+                                                ) : (
+                                                    <FolderOpen className="w-4 h-4" />
+                                                )}
+                                            </Button>
+                                        </div>
+                                    </div>
+
+                                    {memoryBrowser && (
+                                        <div className="border border-border/70 rounded-xl overflow-hidden bg-secondary/20">
+                                            <div className="flex items-center gap-2 px-3 py-2 border-b border-border/70 text-xs text-muted-foreground">
+                                                <HardDrive className="w-3.5 h-3.5" />
+                                                <span className="truncate font-mono">{memoryBrowser.currentPath}</span>
+                                            </div>
+                                            <div className="flex flex-wrap gap-2 p-3 border-b border-border/70">
+                                                {memoryBrowser.roots?.map((root) => (
+                                                    <button
+                                                        key={root.path}
+                                                        type="button"
+                                                        onClick={() => browseMemoryPath(root.path)}
+                                                        className="px-2 py-1 rounded-lg bg-background/60 border border-border text-[11px] text-muted-foreground hover:text-foreground"
+                                                    >
+                                                        {root.label}
+                                                    </button>
+                                                ))}
+                                                {memoryBrowser.parentPath && (
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => browseMemoryPath(memoryBrowser.parentPath || undefined)}
+                                                        className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-background/60 border border-border text-[11px] text-muted-foreground hover:text-foreground"
+                                                    >
+                                                        <ArrowUp className="w-3 h-3" />
+                                                        上一層
+                                                    </button>
+                                                )}
+                                            </div>
+                                            <div className="max-h-52 overflow-auto p-2 space-y-1">
+                                                {memoryBrowser.entries.length > 0 ? memoryBrowser.entries.map((entry) => (
+                                                    <button
+                                                        key={entry.path}
+                                                        type="button"
+                                                        onClick={() => browseMemoryPath(entry.path)}
+                                                        className={cn(
+                                                            "w-full flex items-center gap-2 text-left px-3 py-2 rounded-lg text-xs transition-colors",
+                                                            entry.hasMemory
+                                                                ? "bg-primary/10 text-primary border border-primary/30"
+                                                                : "text-muted-foreground hover:bg-secondary hover:text-foreground"
+                                                        )}
+                                                    >
+                                                        <FolderOpen className="w-3.5 h-3.5 shrink-0" />
+                                                        <span className="truncate flex-1">{entry.name}</span>
+                                                        {entry.hasMemory && <span className="text-[10px] font-semibold">golem_memory</span>}
+                                                    </button>
+                                                )) : (
+                                                    <div className="px-3 py-6 text-center text-xs text-muted-foreground">
+                                                        此層沒有可瀏覽的資料夾
+                                                    </div>
+                                                )}
+                                            </div>
+                                            {memoryBrowser.hasMemory && (
+                                                <div className="px-3 py-2 bg-primary/10 border-t border-primary/20 text-xs text-primary">
+                                                    已偵測到可轉生記憶：{memoryBrowser.memoryPath}
+                                                </div>
+                                            )}
+                                        </div>
+                                    )}
+
+                                    {memoryImportResult?.success && (
+                                        <div className="p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-xl text-xs text-emerald-300 leading-relaxed">
+                                            已從舊專案複製 {memoryImportResult.summary?.files ?? 0} 個檔案到新專案記憶庫。
+                                            {memoryImportResult.backupPath && (
+                                                <span className="block mt-1 text-emerald-300/75">原本的新專案記憶已備份：{memoryImportResult.backupPath}</span>
+                                            )}
+                                            {(memoryImportResult.summary?.skipped?.length ?? 0) > 0 && (
+                                                <span className="block mt-2 text-amber-200">
+                                                    有 {memoryImportResult.summary?.skipped?.length} 個項目因權限或特殊檔案類型被跳過：
+                                                    {memoryImportResult.summary?.skipped?.slice(0, 3).map((item) => ` ${item.path} (${item.reason})`).join("；")}
+                                                </span>
+                                            )}
+                                        </div>
+                                    )}
+
+                                    {!memoryImportResult?.success && (memoryImportResult?.skipped?.length ?? 0) > 0 && (
+                                        <div className="p-3 bg-red-500/10 border border-red-500/30 rounded-xl text-xs text-red-300 leading-relaxed">
+                                            無法讀取舊記憶資料夾。第一批被跳過項目：
+                                            {memoryImportResult?.skipped?.slice(0, 3).map((item) => ` ${item.path} (${item.reason})`).join("；")}
+                                        </div>
+                                    )}
+
+                                    <Button
+                                        type="button"
+                                        variant="secondary"
+                                        onClick={importReincarnatedMemory}
+                                        disabled={isImportingMemory || !memoryPathInput.trim()}
+                                        className="w-full"
+                                    >
+                                        {isImportingMemory ? (
+                                            <span className="flex items-center gap-2">
+                                                <div className="w-4 h-4 border-2 border-muted-foreground/30 border-t-muted-foreground rounded-full animate-spin" />
+                                                正在拷貝舊記憶...
+                                            </span>
+                                        ) : (
+                                            <span className="flex items-center gap-2">
+                                                <RotateCcw className="w-4 h-4" />
+                                                執行記憶轉生
+                                            </span>
+                                        )}
+                                    </Button>
                                 </div>
                             )}
                         </div>

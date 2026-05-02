@@ -6,6 +6,17 @@ const SNAPSHOT_PATH = path.join(SNAPSHOT_DIR, 'stock-dashboard-snapshot.json');
 const MAX_SNAPSHOT_BYTES = 700 * 1024;
 const TWO_WEEKS_MS = 14 * 24 * 60 * 60 * 1000;
 const DEFAULT_SYMBOLS = ['2330.TW', '0050.TW', '2454.TW', 'AAPL', 'NVDA', 'TSM'];
+const US_NEWS_ALIASES = {
+    AAPL: ['蘋果', 'Apple'],
+    NVDA: ['輝達', 'NVIDIA'],
+    TSLA: ['特斯拉', 'Tesla'],
+    MSFT: ['微軟', 'Microsoft'],
+    AMZN: ['亞馬遜', 'Amazon'],
+    META: ['Meta', 'Facebook'],
+    GOOGL: ['Google', '谷歌', 'Alphabet'],
+    GOOG: ['Google', '谷歌', 'Alphabet'],
+    TSM: ['台積電', 'TSMC'],
+};
 const RANGE_MAP = {
     '1D': { range: '1d', interval: '5m' },
     '1M': { range: '1mo', interval: '1d' },
@@ -153,6 +164,64 @@ function resolveDuckDuckGoUrl(value) {
     }
 }
 
+function escapeRegExp(value) {
+    return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function parseRssItems(xml, sourceName) {
+    const itemRegex = /<item>([\s\S]*?)<\/item>/g;
+    return Array.from(String(xml || '').matchAll(itemRegex)).map((match) => {
+        const block = match[1] || '';
+        const readTag = (tag) => {
+            const tagMatch = block.match(new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`, 'i'));
+            return decodeHtml(tagMatch?.[1] || '');
+        };
+        const publishedAt = readTag('pubDate');
+        return {
+            title: readTag('title'),
+            url: readTag('link'),
+            snippet: readTag('description'),
+            source: sourceName,
+            publishedAt: publishedAt ? new Date(publishedAt).toISOString() : '',
+        };
+    }).filter((item) => item.title && item.url);
+}
+
+function getNewsKeywords(queryInfo) {
+    const symbol = String(queryInfo.symbol || '').toUpperCase();
+    const name = String(queryInfo.name || '').trim();
+    const keywords = [symbol, queryInfo.yahooSymbol, name];
+    if (US_NEWS_ALIASES[symbol]) keywords.push(...US_NEWS_ALIASES[symbol]);
+    if (name.includes(' ')) keywords.push(...name.split(/\s+/).filter((word) => word.length >= 3));
+    return Array.from(new Set(keywords.map((item) => String(item || '').trim()).filter((item) => item.length >= 2)));
+}
+
+function isWithinDateWindow(item, queryInfo) {
+    if (!item.publishedAt) return true;
+    const published = Date.parse(item.publishedAt);
+    const since = Date.parse(queryInfo.dateWindow.since);
+    const until = Date.parse(queryInfo.dateWindow.until) + 24 * 60 * 60 * 1000;
+    if (!Number.isFinite(published)) return true;
+    return published >= since && published <= until;
+}
+
+function isRelevantNews(item, queryInfo) {
+    const haystack = `${item.title || ''} ${item.snippet || ''} ${item.url || ''}`.toLowerCase();
+    return getNewsKeywords(queryInfo).some((keyword) => haystack.includes(keyword.toLowerCase()));
+}
+
+function dedupeNews(items, limit) {
+    const unique = new Map();
+    for (const item of items) {
+        if (!item?.title || !item?.url) continue;
+        const key = item.url.split('?')[0] || item.title;
+        if (!unique.has(key)) unique.set(key, item);
+    }
+    return Array.from(unique.values())
+        .sort((a, b) => Date.parse(b.publishedAt || 0) - Date.parse(a.publishedAt || 0))
+        .slice(0, limit);
+}
+
 function buildStockNewsQuery(quoteOrSymbol, options = {}) {
     const now = options.now instanceof Date ? options.now : new Date();
     const since = options.since instanceof Date ? options.since : new Date(now.getTime() - TWO_WEEKS_MS);
@@ -182,9 +251,7 @@ function buildStockNewsQuery(quoteOrSymbol, options = {}) {
     };
 }
 
-async function fetchStockNews(quoteOrSymbol, options = {}) {
-    const queryInfo = buildStockNewsQuery(quoteOrSymbol, options);
-    if (!queryInfo.yahooSymbol) throw createHttpError(400, 'Missing symbol for news search');
+async function fetchDuckDuckGoNews(queryInfo, options = {}) {
     const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(queryInfo.query)}&kl=tw-tzh&df=m`;
     const html = await fetchJsonLikeText(url);
     const results = [];
@@ -205,33 +272,107 @@ async function fetchStockNews(quoteOrSymbol, options = {}) {
             title,
             url: resultUrl,
             snippet,
-            source,
+            source: source || 'DuckDuckGo HTML search',
+            publishedAt: '',
         });
-        if (results.length >= (options.limit || 6)) break;
+        if (results.length >= (options.limit || 12)) break;
+    }
+    return results;
+}
+
+async function fetchYahooRssNews(queryInfo) {
+    const categories = queryInfo.market === 'tw' ? ['tw-market', 'news'] : ['intl-markets', 'news'];
+    const batches = await Promise.all(categories.map(async (category) => {
+        const xml = await fetchText(`https://tw.stock.yahoo.com/rss?category=${encodeURIComponent(category)}`, {
+            Accept: 'application/rss+xml,text/xml,text/plain',
+            Referer: 'https://tw.stock.yahoo.com/',
+        });
+        return parseRssItems(xml, `Yahoo 股市 RSS ${category}`);
+    }));
+    const rows = batches.flat().filter((item) => isWithinDateWindow(item, queryInfo));
+    const relevant = rows.filter((item) => isRelevantNews(item, queryInfo));
+    return relevant.length ? relevant : rows.slice(0, 8);
+}
+
+async function fetchYahooFinanceNews(queryInfo) {
+    const searchTerms = `${queryInfo.yahooSymbol} ${queryInfo.name}`;
+    const url = `https://query1.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(searchTerms)}&quotesCount=0&newsCount=12`;
+    const payload = await fetchJson(url);
+    const rows = Array.isArray(payload?.news) ? payload.news : [];
+    return rows.map((item) => ({
+        title: decodeHtml(item.title || ''),
+        url: item.link || item.url || '',
+        snippet: decodeHtml(item.summary || item.publisher || ''),
+        source: item.publisher ? `Yahoo Finance · ${item.publisher}` : 'Yahoo Finance news',
+        publishedAt: item.providerPublishTime ? new Date(Number(item.providerPublishTime) * 1000).toISOString() : '',
+    })).filter((item) => item.title && item.url && isWithinDateWindow(item, queryInfo) && isRelevantNews(item, queryInfo));
+}
+
+async function fetchGoogleNewsRss(queryInfo) {
+    const terms = queryInfo.market === 'tw'
+        ? `${queryInfo.symbol} ${queryInfo.name} 股票 when:14d`
+        : `${queryInfo.symbol} ${queryInfo.name} stock 股票 when:14d`;
+    const url = `https://news.google.com/rss/search?q=${encodeURIComponent(terms)}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant`;
+    const xml = await fetchText(url, {
+        Accept: 'application/rss+xml,text/xml,text/plain',
+        Referer: 'https://news.google.com/',
+    });
+    return parseRssItems(xml, 'Google News RSS')
+        .filter((item) => isWithinDateWindow(item, queryInfo) && isRelevantNews(item, queryInfo));
+}
+
+async function fetchStockNews(quoteOrSymbol, options = {}) {
+    const queryInfo = buildStockNewsQuery(quoteOrSymbol, options);
+    if (!queryInfo.yahooSymbol) throw createHttpError(400, 'Missing symbol for news search');
+    const limit = options.limit || 12;
+    const sourceStatus = [];
+    const jobs = [
+        ['Yahoo 股市 RSS', () => fetchYahooRssNews(queryInfo)],
+        ['Yahoo Finance news', () => fetchYahooFinanceNews(queryInfo)],
+        ['Google News RSS', () => fetchGoogleNewsRss(queryInfo)],
+        ['DuckDuckGo HTML search', () => fetchDuckDuckGoNews(queryInfo, { limit })],
+    ];
+    const collected = [];
+    for (const [source, job] of jobs) {
+        try {
+            const rows = await job();
+            collected.push(...rows);
+            sourceStatus.push({ source, status: 'ok', count: rows.length });
+        } catch (error) {
+            sourceStatus.push({ source, status: 'error', error: error.message || String(error) });
+        }
     }
 
     return {
         ...queryInfo,
-        source: 'DuckDuckGo HTML search',
+        source: sourceStatus.map((item) => item.source).join(' + '),
+        sourceStatus,
         fetchedAt: new Date().toISOString(),
-        results,
+        results: dedupeNews(collected, limit),
     };
 }
 
-async function fetchJsonLikeText(url) {
+async function fetchText(url, extraHeaders = {}) {
     const response = await fetch(url, {
         headers: {
-            'Accept': 'text/html,application/xhtml+xml',
+            'Accept': 'text/html,application/xhtml+xml,text/plain',
             'Accept-Language': 'zh-TW,zh;q=0.9,en-US;q=0.7,en;q=0.6',
-            'Referer': 'https://html.duckduckgo.com/',
             'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 GolemDashboard/1.0',
+            ...extraHeaders,
         },
     });
     const text = await response.text();
     if (!response.ok) {
-        throw createHttpError(response.status === 404 ? 404 : 502, `DuckDuckGo request failed (${response.status})`);
+        throw createHttpError(response.status === 404 ? 404 : 502, `Text request failed (${response.status})`);
     }
     return text;
+}
+
+async function fetchJsonLikeText(url) {
+    return fetchText(url, {
+        Accept: 'text/html,application/xhtml+xml',
+        Referer: 'https://html.duckduckgo.com/',
+    });
 }
 
 async function fetchJson(url) {

@@ -198,6 +198,74 @@ golems_wizard() {
 
 
 
+get_playwright_cache_dir() {
+    if [ -n "${PLAYWRIGHT_BROWSERS_PATH:-}" ] && [ "${PLAYWRIGHT_BROWSERS_PATH:-}" != "0" ]; then
+        echo "$PLAYWRIGHT_BROWSERS_PATH"
+        return
+    fi
+
+    case "$(os_detect)" in
+        macos)
+            echo "${HOME}/Library/Caches/ms-playwright"
+            ;;
+        linux|wsl)
+            echo "${XDG_CACHE_HOME:-$HOME/.cache}/ms-playwright"
+            ;;
+        *)
+            echo "${HOME}/.cache/ms-playwright"
+            ;;
+    esac
+}
+
+check_writable_directory() {
+    local dir="$1"
+    local probe="${dir}/.golem-write-test-$$"
+
+    mkdir -p "$dir" 2>/dev/null || return 1
+    mkdir "$probe" 2>/dev/null || return 1
+    rmdir "$probe" 2>/dev/null || true
+    return 0
+}
+
+step_check_playwright_cache_permissions() {
+    [ "${PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD:-false}" = "true" ] && return 0
+    [ "${PLAYWRIGHT_BROWSERS_PATH:-}" = "0" ] && return 0
+
+    local cache_dir
+    cache_dir="$(get_playwright_cache_dir)"
+
+    if check_writable_directory "$cache_dir"; then
+        log "Playwright cache directory writable: $cache_dir"
+        return 0
+    fi
+
+    local owner="unknown"
+    if [ -e "$cache_dir" ]; then
+        owner=$(ls -ld "$cache_dir" 2>/dev/null | awk '{print $3 ":" $4}')
+    fi
+
+    ui_warn "偵測到 Playwright 瀏覽器快取目錄權限異常。"
+    echo -e "    ${DIM}路徑: ${cache_dir}${NC}"
+    echo -e "    ${DIM}目前擁有者: ${owner}${NC}"
+    log "Playwright cache permission problem: path=$cache_dir owner=$owner"
+
+    if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+        ui_info "正在自動修復 Playwright 快取目錄權限..."
+        if sudo chown -R "$(id -un):$(id -gn)" "$cache_dir" 2>/dev/null && check_writable_directory "$cache_dir"; then
+            ui_success "Playwright 快取目錄權限已修復"
+            log "Fixed Playwright cache permissions: $cache_dir"
+            return 0
+        fi
+    fi
+
+    ui_warn "無法自動修復，為避免安裝卡住，將跳過 Playwright 瀏覽器下載。"
+    echo -e "  ${YELLOW}請在終端機執行以下指令後，再重新執行安裝：${NC}"
+    echo -e "    ${BOLD}sudo chown -R $(id -un):$(id -gn) \"${cache_dir}\"${NC}"
+    echo -e "    ${BOLD}npx playwright install chromium${NC}"
+    log "Playwright browser install skipped due to unwritable cache: $cache_dir"
+    return 1
+}
+
 step_install_core() {
     echo -e "  📦 安裝核心依賴..."
     echo -e "  ${DIM}  (playwright, blessed, gemini-ai, discord.js ...)${NC}"
@@ -236,7 +304,7 @@ step_install_core() {
 
     # ─── Playwright 瀏覽器安裝 ───
     ui_info "正在準備瀏覽器核心 (Playwright Chromium)..."
-    if ! run_quiet_step "安裝 Playwright 瀏覽器" npx playwright install chromium; then
+    if step_check_playwright_cache_permissions && ! run_quiet_step "安裝 Playwright 瀏覽器" npx playwright install chromium; then
         ui_warn "Playwright 瀏覽器安裝失敗，但系統可能仍可運作 (若已安裝過)。"
         log "Playwright browser install failed or was already present"
     fi

@@ -1,9 +1,160 @@
 const express = require('express');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const { buildOperationGuard } = require('../server/security');
 
 module.exports = function registerGolemRoutes(server) {
     const router = express.Router();
     const requireGolemOps = buildOperationGuard(server, 'golem_admin_operation');
+
+    function ensureLocalFileAccess(req, res) {
+        if (server.isLocalRequest(req)) return true;
+        res.status(403).json({
+            error: 'Memory reincarnation is only available from the local dashboard.'
+        });
+        return false;
+    }
+
+    function isDirectory(targetPath) {
+        try {
+            return fs.statSync(targetPath).isDirectory();
+        } catch {
+            return false;
+        }
+    }
+
+    function isDirectoryEmpty(targetPath) {
+        try {
+            return !fs.existsSync(targetPath) || fs.readdirSync(targetPath).length === 0;
+        } catch {
+            return true;
+        }
+    }
+
+    function resolveMemorySource(inputPath) {
+        const rawPath = String(inputPath || '').trim();
+        if (!rawPath) return null;
+
+        const resolved = path.resolve(rawPath.replace(/^~/, os.homedir()));
+        const basename = path.basename(resolved);
+        const memoryDir = basename === 'golem_memory'
+            ? resolved
+            : path.join(resolved, 'golem_memory');
+
+        return { projectDir: basename === 'golem_memory' ? path.dirname(resolved) : resolved, memoryDir };
+    }
+
+    function countMemoryFiles(memoryDir) {
+        const summary = { files: 0, directories: 0, bytes: 0 };
+        const stack = [memoryDir];
+
+        while (stack.length > 0) {
+            const current = stack.pop();
+            let entries = [];
+            try {
+                entries = fs.readdirSync(current, { withFileTypes: true });
+            } catch {
+                continue;
+            }
+
+            for (const entry of entries) {
+                const entryPath = path.join(current, entry.name);
+                if (entry.isDirectory()) {
+                    summary.directories += 1;
+                    stack.push(entryPath);
+                } else if (entry.isFile()) {
+                    summary.files += 1;
+                    try {
+                        summary.bytes += fs.statSync(entryPath).size;
+                    } catch {
+                        // Ignore files that disappear during import.
+                    }
+                }
+            }
+        }
+
+        return summary;
+    }
+
+    function toRelativeMemoryPath(sourceRoot, entryPath) {
+        const rel = path.relative(sourceRoot, entryPath);
+        return rel || '.';
+    }
+
+    function copyMemoryDirectoryBestEffort(sourceRoot, targetRoot) {
+        const summary = { files: 0, directories: 0, bytes: 0, skipped: [] };
+        const maxSkippedDetails = 25;
+
+        function recordSkip(entryPath, error) {
+            const relativePath = toRelativeMemoryPath(sourceRoot, entryPath);
+            const reason = error && error.code ? error.code : (error && error.message) || 'UNKNOWN';
+            if (summary.skipped.length < maxSkippedDetails) {
+                summary.skipped.push({ path: relativePath, reason });
+            }
+            console.warn(`[WebServer] Memory reincarnation skipped ${relativePath}: ${reason}`);
+        }
+
+        function copyEntry(sourcePath, targetPath) {
+            let stat;
+            try {
+                stat = fs.lstatSync(sourcePath);
+            } catch (error) {
+                recordSkip(sourcePath, error);
+                return;
+            }
+
+            if (stat.isSymbolicLink()) {
+                recordSkip(sourcePath, { code: 'SYMLINK_SKIPPED' });
+                return;
+            }
+
+            if (stat.isDirectory()) {
+                try {
+                    fs.mkdirSync(targetPath, { recursive: true });
+                    summary.directories += 1;
+                } catch (error) {
+                    recordSkip(sourcePath, error);
+                    return;
+                }
+
+                let entries;
+                try {
+                    entries = fs.readdirSync(sourcePath, { withFileTypes: true });
+                } catch (error) {
+                    recordSkip(sourcePath, error);
+                    return;
+                }
+
+                for (const entry of entries) {
+                    copyEntry(path.join(sourcePath, entry.name), path.join(targetPath, entry.name));
+                }
+                return;
+            }
+
+            if (!stat.isFile()) {
+                recordSkip(sourcePath, { code: 'UNSUPPORTED_ENTRY' });
+                return;
+            }
+
+            try {
+                fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+                fs.copyFileSync(sourcePath, targetPath);
+                try {
+                    fs.chmodSync(targetPath, stat.mode);
+                } catch {
+                    // Permissions are best-effort; copied content matters more.
+                }
+                summary.files += 1;
+                summary.bytes += stat.size;
+            } catch (error) {
+                recordSkip(sourcePath, error);
+            }
+        }
+
+        copyEntry(sourceRoot, targetRoot);
+        return summary;
+    }
 
     async function startTelegramPollingIfAvailable(instance, golemId, reason) {
         const bot = instance && instance.brain && instance.brain.tgBot;
@@ -166,6 +317,112 @@ module.exports = function registerGolemRoutes(server) {
             return res.json({ success: true, message: `Golem '${id}' started successfully.` });
         } catch (e) {
             console.error('[WebServer] Failed to start Golem:', e);
+            return res.status(500).json({ error: e.message });
+        }
+    });
+
+    router.get('/api/golems/memory-reincarnation/browse', requireGolemOps, (req, res) => {
+        if (!ensureLocalFileAccess(req, res)) return;
+
+        try {
+            const requestedPath = String(req.query.path || '').trim();
+            const currentPath = requestedPath
+                ? path.resolve(requestedPath.replace(/^~/, os.homedir()))
+                : os.homedir();
+
+            if (!isDirectory(currentPath)) {
+                return res.status(400).json({ error: 'Selected path is not a readable directory.' });
+            }
+
+            const entries = fs.readdirSync(currentPath, { withFileTypes: true })
+                .filter((entry) => entry.isDirectory() && !entry.name.startsWith('.'))
+                .slice(0, 250)
+                .map((entry) => {
+                    const fullPath = path.join(currentPath, entry.name);
+                    return {
+                        name: entry.name,
+                        path: fullPath,
+                        hasMemory: isDirectory(path.join(fullPath, 'golem_memory')) || entry.name === 'golem_memory',
+                    };
+                })
+                .sort((a, b) => Number(b.hasMemory) - Number(a.hasMemory) || a.name.localeCompare(b.name));
+
+            const source = resolveMemorySource(currentPath);
+            const hasMemory = !!source && isDirectory(source.memoryDir);
+
+            return res.json({
+                currentPath,
+                parentPath: path.dirname(currentPath) !== currentPath ? path.dirname(currentPath) : null,
+                entries,
+                hasMemory,
+                memoryPath: hasMemory ? source.memoryDir : null,
+                roots: [
+                    { label: 'Home', path: os.homedir() },
+                    { label: 'Current Project', path: process.cwd() },
+                    { label: 'Desktop', path: path.join(os.homedir(), 'Desktop') },
+                    { label: 'Downloads', path: path.join(os.homedir(), 'Downloads') },
+                ].filter((root) => isDirectory(root.path)),
+            });
+        } catch (e) {
+            console.error('[WebServer] Failed to browse memory reincarnation folders:', e);
+            return res.status(500).json({ error: e.message });
+        }
+    });
+
+    router.post('/api/golems/memory-reincarnation/import', requireGolemOps, (req, res) => {
+        if (!ensureLocalFileAccess(req, res)) return;
+
+        try {
+            const source = resolveMemorySource(req.body && req.body.sourcePath);
+            if (!source || !isDirectory(source.memoryDir)) {
+                return res.status(400).json({ error: '找不到舊專案的 golem_memory 資料夾。' });
+            }
+
+            const ConfigManager = require('../../src/config/index');
+            const targetMemoryDir = path.resolve(ConfigManager.MEMORY_BASE_DIR);
+            const sourceMemoryDir = path.resolve(source.memoryDir);
+
+            if (sourceMemoryDir === targetMemoryDir) {
+                return res.status(400).json({ error: '來源與目前記憶資料夾相同，不需要轉生。' });
+            }
+
+            const targetParent = path.dirname(targetMemoryDir);
+            if (!fs.existsSync(targetParent)) fs.mkdirSync(targetParent, { recursive: true });
+
+            const tempTargetDir = fs.mkdtempSync(path.join(targetParent, '.golem-memory-reincarnation-'));
+            const summary = copyMemoryDirectoryBestEffort(sourceMemoryDir, tempTargetDir);
+
+            if (summary.files === 0 && summary.directories <= 1) {
+                fs.rmSync(tempTargetDir, { recursive: true, force: true });
+                return res.status(400).json({
+                    error: '舊記憶資料夾無法讀取，沒有任何記憶檔案被複製。',
+                    skipped: summary.skipped,
+                });
+            }
+
+            let backupPath = null;
+            if (fs.existsSync(targetMemoryDir) && !isDirectoryEmpty(targetMemoryDir)) {
+                backupPath = `${targetMemoryDir}.before-reincarnation-${Date.now()}`;
+                fs.renameSync(targetMemoryDir, backupPath);
+            } else if (fs.existsSync(targetMemoryDir)) {
+                fs.rmSync(targetMemoryDir, { recursive: true, force: true });
+            }
+
+            fs.renameSync(tempTargetDir, targetMemoryDir);
+            console.log(`🧬 [WebServer] Memory reincarnated from ${sourceMemoryDir} to ${targetMemoryDir}`);
+
+            return res.json({
+                success: true,
+                sourcePath: sourceMemoryDir,
+                targetPath: targetMemoryDir,
+                backupPath,
+                summary,
+                warning: summary.skipped.length > 0
+                    ? '部分檔案因權限或特殊檔案類型無法複製，已跳過；可讀取的記憶已完成轉生。'
+                    : '部分舊版技能、腳本或瀏覽器狀態可能無法完全相容新專案。'
+            });
+        } catch (e) {
+            console.error('[WebServer] Failed to import reincarnated memory:', e);
             return res.status(500).json({ error: e.message });
         }
     });

@@ -4,6 +4,7 @@
 .env
 .env.test
 .env.production
+.env.tmp
 # 防止 Google Session 或 Puppeteer Cookies 洩漏
 google-session.json
 *.cookie
@@ -31,6 +32,7 @@ queue/
 
 # 向量記憶體與知識庫 (Local RAG)
 golem_memory/
+golem_memory.before-reincarnation-*/
 memory/knowledge/
 # 如果您希望保留預設記憶模板，可使用 !golem_memory/template/
 

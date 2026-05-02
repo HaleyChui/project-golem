@@ -131,6 +131,7 @@ type StockNewsItem = {
     url: string;
     snippet: string;
     source: string;
+    publishedAt?: string;
 };
 
 type StockNews = {
@@ -930,7 +931,7 @@ ${JSON.stringify(snapshotForGolem, null, 2)}`;
                             <Newspaper className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
                             <div className="space-y-1 text-xs leading-5 text-muted-foreground">
                                 <div className="font-semibold text-foreground">{isEnglish ? "News policy" : "新聞規則"}</div>
-                                <p>{isEnglish ? "News search is Chinese-first and adds a 14-day date window to the DuckDuckGo query." : "新聞搜尋中文優先，DuckDuckGo query 會加入系統日期往前兩週的時間條件。"}</p>
+                                <p>{isEnglish ? "News search is Chinese-first, merges Yahoo/Google/DuckDuckGo sources, and filters the latest 14 days." : "新聞搜尋中文優先，會合併 Yahoo、Google、DuckDuckGo 來源，並過濾最近 14 天。"}</p>
                             </div>
                         </CardContent>
                     </Card>
@@ -983,7 +984,7 @@ ${JSON.stringify(snapshotForGolem, null, 2)}`;
                                 </div>
                             )}
 
-                            <div className="min-h-[146px] rounded-lg border border-border bg-secondary/25">
+                            <div className="max-h-[320px] min-h-[146px] overflow-y-auto rounded-lg border border-border bg-secondary/25">
                                 {isSearching ? (
                                     <div className="flex h-32 items-center justify-center text-sm text-muted-foreground">
                                         <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -991,7 +992,7 @@ ${JSON.stringify(snapshotForGolem, null, 2)}`;
                                     </div>
                                 ) : searchResults.length ? (
                                     <div className="divide-y divide-border/70">
-                                        {searchResults.slice(0, 5).map((result) => (
+                                        {searchResults.map((result) => (
                                             <button
                                                 key={result.yahooSymbol}
                                                 type="button"
@@ -1223,8 +1224,8 @@ ${JSON.stringify(snapshotForGolem, null, 2)}`;
                                     {isEnglish ? "Searching news..." : "搜尋新聞中..."}
                                 </div>
                             ) : news?.results?.length ? (
-                                <div className="space-y-2">
-                                    {news.results.slice(0, 4).map((item) => (
+                                <div className="max-h-[420px] space-y-2 overflow-y-auto pr-1">
+                                    {news.results.map((item) => (
                                         <a
                                             key={item.url}
                                             href={item.url}
@@ -1234,6 +1235,11 @@ ${JSON.stringify(snapshotForGolem, null, 2)}`;
                                         >
                                             <div className="line-clamp-2 text-sm font-semibold leading-5">{item.title}</div>
                                             <div className="mt-1 line-clamp-2 text-xs leading-5 text-muted-foreground">{item.snippet || item.source}</div>
+                                            {(item.publishedAt || item.source) && (
+                                                <div className="mt-2 text-[11px] text-muted-foreground">
+                                                    {item.source}{item.publishedAt ? ` · ${getFreshnessLabel(item.publishedAt, localeCode)}` : ""}
+                                                </div>
+                                            )}
                                         </a>
                                     ))}
                                 </div>
