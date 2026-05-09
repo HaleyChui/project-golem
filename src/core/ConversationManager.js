@@ -91,6 +91,10 @@ class ConversationManager {
         this.userBuffers.set(chatId, userState);
     }
 
+    _logQueueState(reason = 'update') {
+        console.log(`[QueueState] queue=${this.queue.length} processing=${this.isProcessing ? 1 : 0} reason=${reason}`);
+    }
+
     _commitDirectly(ctx, text, isPriority, attachment = null, options = {}) {
         // ✨ [v9.1 插隊系統：大腦層擴充]
         // 如果不是特急件 (isPriority=false)，且隊列中已有任務 (長度 >= 1)，則觸發詢問
@@ -160,6 +164,7 @@ class ConversationManager {
         } else {
             this.queue.push({ ctx, text, attachment, options });
         }
+        this._logQueueState(isPriority ? 'enqueue_priority' : 'enqueue_normal');
         this._processQueue();
     }
 
@@ -193,6 +198,7 @@ class ConversationManager {
 
         this.isProcessing = true;
         const task = this.queue.shift();
+        this._logQueueState('dequeue_start');
 
         // 🧹 [Extra Arch 3] Memory Guard 記憶體上限監控
         const heapObj = process.memoryUsage();
@@ -269,6 +275,7 @@ class ConversationManager {
                 isObserver: this.observerMode,
                 interventionLevel: this.interventionLevel,
                 attachment: task.attachment,
+                isAdmin: task.ctx && task.ctx.isAdmin === true,
                 ...task.options // 🎯 [v9.1.13] 透傳來自隊列的自定義選項 (如 suppressReply)
             });
 
@@ -303,6 +310,7 @@ class ConversationManager {
             await task.ctx.reply(`⚠️ 系統暫時無法回應，請稍後再試。`);
         } finally {
             this.isProcessing = false;
+            this._logQueueState('process_done');
             
             // 🧹 [Memory Optimization] 強制執行 V8 垃圾回收，釋放回合變數
             if (global.gc) {

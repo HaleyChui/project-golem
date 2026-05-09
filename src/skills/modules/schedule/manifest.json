@@ -8,6 +8,12 @@
   "entry": "index.js",
   "prompt": "skill.md",
   "toolsets": [],
-  "triggers": ["提醒我", "幫我排程", "明天提醒", "schedule", "remind me"],
+  "triggers": [
+    "提醒我",
+    "幫我排程",
+    "明天提醒",
+    "schedule",
+    "remind me"
+  ],
   "version": "1.0.0"
 }

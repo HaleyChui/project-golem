@@ -15,11 +15,72 @@ const MCPToolCatalog = require('./MCPToolCatalog');
 const CONFIG_PATH = path.resolve(process.cwd(), 'data', 'mcp-servers.json');
 const MAX_LOG     = 500;
 const DEFAULT_TIMEOUT_MS = 30000;
+const CHROME_PROFILE_LOCK_RE = /(browser is already running|user.?data.?dir(?:ectory)?.*in use|processsingleton|singletonlock|profile.*in use|opening in existing browser session)/i;
 
 function normalizeTimeout(value, fallback = DEFAULT_TIMEOUT_MS) {
     const parsed = Number(value);
     if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
     return Math.min(Math.max(Math.round(parsed), 1000), 600000);
+}
+
+function extractUserDataDirArg(args = []) {
+    const list = Array.isArray(args) ? args : [];
+    for (let i = 0; i < list.length; i += 1) {
+        const cur = String(list[i] || '');
+        const lower = cur.toLowerCase();
+        if (lower.startsWith('--userdatadir=')) return cur.slice(cur.indexOf('=') + 1);
+        if (lower.startsWith('--user-data-dir=')) return cur.slice(cur.indexOf('=') + 1);
+        if (lower === '--userdatadir' || lower === '--user-data-dir') {
+            return String(list[i + 1] || '').trim();
+        }
+    }
+    return '';
+}
+
+function replaceUserDataDirArg(args = [], nextDir = '') {
+    const list = Array.isArray(args) ? [...args] : [];
+    const output = [];
+    let replaced = false;
+
+    for (let i = 0; i < list.length; i += 1) {
+        const cur = String(list[i] || '');
+        const lower = cur.toLowerCase();
+        if (lower.startsWith('--userdatadir=')) {
+            output.push(`--userDataDir=${nextDir}`);
+            replaced = true;
+            continue;
+        }
+        if (lower.startsWith('--user-data-dir=')) {
+            output.push(`--user-data-dir=${nextDir}`);
+            replaced = true;
+            continue;
+        }
+        if (lower === '--userdatadir' || lower === '--user-data-dir') {
+            output.push(cur);
+            output.push(nextDir);
+            replaced = true;
+            i += 1;
+            continue;
+        }
+        output.push(cur);
+    }
+
+    if (!replaced) {
+        output.push(`--userDataDir=${nextDir}`);
+    }
+    return output;
+}
+
+function shouldRetryWithFallbackProfile(cfg, error) {
+    const hasUserDataDir = Boolean(extractUserDataDirArg(cfg && cfg.args));
+    if (!hasUserDataDir) return false;
+    const text = String((error && error.message) || '');
+    return CHROME_PROFILE_LOCK_RE.test(text);
+}
+
+function buildFallbackProfileDir(baseDir) {
+    const stamp = Date.now().toString(36);
+    return `${baseDir}-fallback-${stamp}`;
 }
 
 class MCPManager extends EventEmitter {
@@ -240,27 +301,65 @@ class MCPManager extends EventEmitter {
     async _startClient(cfg) {
         // Stop existing client if any
         await this._stopClient(cfg.name);
+        try {
+            return await this._startClientWithConfig(cfg, { mode: 'primary' });
+        } catch (err) {
+            if (!shouldRetryWithFallbackProfile(cfg, err)) throw err;
 
-        const client = new MCPClient(cfg);
+            const originalDir = extractUserDataDirArg(cfg.args);
+            const fallbackDir = buildFallbackProfileDir(originalDir);
+            fs.mkdirSync(fallbackDir, { recursive: true });
+            const fallbackCfg = {
+                ...cfg,
+                args: replaceUserDataDirArg(cfg.args || [], fallbackDir)
+            };
+
+            console.warn(
+                `[MCPManager] "${cfg.name}" profile in use (${originalDir}). ` +
+                `Retrying with fallback profile: ${fallbackDir}`
+            );
+
+            return this._startClientWithConfig(fallbackCfg, {
+                mode: 'fallback_profile',
+                originalDir,
+                fallbackDir
+            });
+        }
+    }
+
+    async _startClientWithConfig(launchCfg, meta = {}) {
+        const client = new MCPClient(launchCfg);
 
         client.on('disconnected', () => {
-            console.log(`[MCPManager] Server "${cfg.name}" disconnected.`);
-            this._clients.delete(cfg.name);
+            console.log(`[MCPManager] Server "${launchCfg.name}" disconnected.`);
+            this._clients.delete(launchCfg.name);
         });
 
         client.on('error', (err) => {
-            console.error(`[MCPManager] Server "${cfg.name}" error: ${err.message}`);
-            this._clients.delete(cfg.name);
+            console.error(`[MCPManager] Server "${launchCfg.name}" error: ${err.message}`);
+            this._clients.delete(launchCfg.name);
         });
 
         await client.connect();
-        // Pre-fetch tools and persist to config for definition.js to read at startup
+        client.effectiveLaunch = {
+            command: launchCfg.command,
+            args: launchCfg.args,
+            mode: meta.mode || 'primary',
+            originalDir: meta.originalDir || null,
+            fallbackDir: meta.fallbackDir || null
+        };
+
         try {
             const tools = await client.listTools();
-            this._cacheTools(cfg.name, tools);
+            this._cacheTools(launchCfg.name, tools);
         } catch (_) { /* optional */ }
-        this._clients.set(cfg.name, client);
-        console.log(`[MCPManager] ✅ Connected: "${cfg.name}" (${client.tools.length} tools)`);
+
+        this._clients.set(launchCfg.name, client);
+        if (meta.mode === 'fallback_profile') {
+            console.log(`[MCPManager] ✅ Connected (fallback profile): "${launchCfg.name}" (${client.tools.length} tools)`);
+        } else {
+            console.log(`[MCPManager] ✅ Connected: "${launchCfg.name}" (${client.tools.length} tools)`);
+        }
         return client;
     }
 

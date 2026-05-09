@@ -125,17 +125,38 @@ class LanceDBProDriver {
     }
 
     async clearMemory() {
-        if (fs.existsSync(this.dbPath)) {
-            try {
-                // Close store if possible (though MemoryStore doesn't have close() in its public API yet)
-                // We'll just force delete the directory
-                fs.rmSync(this.dbPath, { recursive: true, force: true });
-                this.store = null;
-                this.retriever = null;
-                console.log(`🗑️ [Memory:Pro] Memory cleared at ${this.dbPath}`);
-            } catch (e) {
-                console.warn("⚠️ [Memory:Pro] Clear memory error:", e.message);
+        const rootDir = path.join(this.baseDir, 'lancedb-pro');
+        let removedEntries = 0;
+        let removedBytes = 0;
+
+        try {
+            if (fs.existsSync(rootDir)) {
+                const stack = [rootDir];
+                while (stack.length > 0) {
+                    const current = stack.pop();
+                    const stat = fs.statSync(current);
+                    if (stat.isDirectory()) {
+                        const children = fs.readdirSync(current).map((name) => path.join(current, name));
+                        stack.push(...children);
+                    } else {
+                        removedEntries += 1;
+                        removedBytes += Number(stat.size || 0);
+                    }
+                }
+                fs.rmSync(rootDir, { recursive: true, force: true });
+                removedEntries += 1; // root dir itself
             }
+
+            this.store = null;
+            this.retriever = null;
+            this.embedder = null;
+            this._initPromise = null;
+
+            console.log(`🗑️ [Memory:Pro] Memory cleared at ${rootDir} (entries=${removedEntries}, bytes=${removedBytes})`);
+            return { cleared: removedEntries, bytes: removedBytes };
+        } catch (e) {
+            console.warn("⚠️ [Memory:Pro] Clear memory error:", e.message);
+            return { cleared: removedEntries, bytes: removedBytes, error: e.message };
         }
     }
 

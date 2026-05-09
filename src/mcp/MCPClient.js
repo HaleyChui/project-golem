@@ -32,6 +32,7 @@ class MCPClient extends EventEmitter {
         this._connected   = false;
         this._capabilities = {};
         this._tools        = [];
+        this._stderrLog    = [];
     }
 
     // ─── Public API ────────────────────────────────────────────────
@@ -39,6 +40,17 @@ class MCPClient extends EventEmitter {
         if (this._connected) return;
 
         return new Promise((resolve, reject) => {
+            let settled = false;
+            const safeResolve = (value) => {
+                if (settled) return;
+                settled = true;
+                resolve(value);
+            };
+            const safeReject = (error) => {
+                if (settled) return;
+                settled = true;
+                reject(error);
+            };
             const env = { ...process.env, ...this.env };
 
             this._process = spawn(this.command, this.args, {
@@ -48,15 +60,22 @@ class MCPClient extends EventEmitter {
 
             this._process.stdout.on('data', (chunk) => this._onData(chunk));
             this._process.stderr.on('data', (chunk) => {
-                const msg = chunk.toString().trim();
-                if (msg) console.warn(`[MCPClient:${this.name}] stderr: ${msg}`);
+                const text = chunk.toString();
+                const lines = text
+                    .split(/\r?\n/)
+                    .map((line) => line.trim())
+                    .filter(Boolean);
+                for (const line of lines) {
+                    this._pushStderr(line);
+                    console.warn(`[MCPClient:${this.name}] stderr: ${line}`);
+                }
             });
 
             this._process.on('error', (err) => {
                 console.error(`[MCPClient:${this.name}] Process error:`, err.message);
                 this._connected = false;
                 this.emit('error', err);
-                reject(err);
+                safeReject(err);
             });
 
             this._process.on('exit', (code, signal) => {
@@ -69,6 +88,16 @@ class MCPClient extends EventEmitter {
                     rej(new Error(`MCP Server "${this.name}" disconnected`));
                     this._pending.delete(id);
                 }
+
+                if (!this._connected) {
+                    const stderrHint = this.getStderrTail();
+                    const detail = stderrHint ? ` | stderr: ${stderrHint}` : '';
+                    const err = new Error(`MCP server "${this.name}" exited before ready (code=${code}, signal=${signal})${detail}`);
+                    err.code = 'MCP_PROCESS_EXIT';
+                    err.exitCode = code;
+                    err.signal = signal;
+                    safeReject(err);
+                }
             });
 
             // Wait for initialize to complete
@@ -76,8 +105,8 @@ class MCPClient extends EventEmitter {
                 this._capabilities = caps;
                 this._connected    = true;
                 this.emit('connected', { capabilities: caps });
-                resolve(caps);
-            }).catch(reject);
+                safeResolve(caps);
+            }).catch(safeReject);
         });
     }
 
@@ -121,6 +150,9 @@ class MCPClient extends EventEmitter {
     get isConnected() { return this._connected; }
     get tools()       { return this._tools; }
     get capabilities(){ return this._capabilities; }
+    getStderrTail(limit = 6) {
+        return this._stderrLog.slice(-Math.max(1, Number(limit) || 6)).join(' | ');
+    }
 
     // ─── Private ───────────────────────────────────────────────────
     async _initialize() {
@@ -224,6 +256,14 @@ class MCPClient extends EventEmitter {
         // Notifications from server (no id) — emit as event
         else if (msg.method && msg.id === undefined) {
             this.emit('notification', { method: msg.method, params: msg.params });
+        }
+    }
+
+    _pushStderr(line) {
+        if (!line) return;
+        this._stderrLog.push(String(line));
+        if (this._stderrLog.length > 80) {
+            this._stderrLog.shift();
         }
     }
 }

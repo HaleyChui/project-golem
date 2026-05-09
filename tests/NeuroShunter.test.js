@@ -90,11 +90,11 @@ describe('NeuroShunter', () => {
         expect(CommandHandler.execute).not.toHaveBeenCalled();
     });
 
-    test('dispatch handles dynamic skill action', async () => {
+    test('dispatch routes action through SkillHandler first', async () => {
         SkillHandler.execute.mockResolvedValue(true);
         ResponseParser.parse.mockReturnValue({
             reply: '',
-            actions: [{ action: 'custom_skill', arg: 'val' }]
+            actions: [{ action: 'command', parameter: 'pwd' }]
         });
 
         await NeuroShunter.dispatch(mockCtx, 'raw', mockBrain, mockController);
@@ -103,11 +103,11 @@ describe('NeuroShunter', () => {
         expect(CommandHandler.execute).not.toHaveBeenCalled();
     });
 
-    test('dispatch falls back to CommandHandler if not multi_agent and skill fails', async () => {
+    test('dispatch falls back to CommandHandler when SkillHandler does not handle action', async () => {
         SkillHandler.execute.mockResolvedValue(false);
         ResponseParser.parse.mockReturnValue({
             reply: '',
-            actions: [{ action: 'unknown_shell_cmd', arg: 'val' }]
+            actions: [{ action: 'command', parameter: 'pwd' }]
         });
 
         await NeuroShunter.dispatch(mockCtx, 'raw', mockBrain, mockController);
@@ -117,9 +117,10 @@ describe('NeuroShunter', () => {
     });
 
     test('dispatch still executes actions when suppressReply is true and actions exist', async () => {
+        SkillHandler.execute.mockResolvedValue(false);
         ResponseParser.parse.mockReturnValue({
             reply: '',
-            actions: [{ action: 'command' }]
+            actions: [{ action: 'command', parameter: 'pwd' }]
         });
 
         await NeuroShunter.dispatch(mockCtx, 'raw', mockBrain, mockController, { suppressReply: true });

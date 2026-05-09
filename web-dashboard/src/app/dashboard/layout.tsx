@@ -25,6 +25,7 @@ const NAV_ITEMS = [
     { labelKey: "sidebar.nav.rpg", href: "/dashboard/rpg", icon: Gamepad2 },
     { labelKey: "sidebar.nav.skills", href: "/dashboard/skills", icon: BookOpen },
     { labelKey: "sidebar.nav.mcp", href: "/dashboard/mcp", icon: Plug },
+    { labelKey: "sidebar.nav.actionGate", href: "/dashboard/action-gate", icon: Terminal },
     { labelKey: "sidebar.nav.agents", href: "/dashboard/agents", icon: Users },
     { labelKey: "sidebar.nav.office", href: "/dashboard/office", icon: Users },
     { labelKey: "sidebar.nav.memory", href: "/dashboard/memory", icon: BrainCircuit },

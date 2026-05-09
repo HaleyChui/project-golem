@@ -2,7 +2,54 @@ const ResponseParser = require('../../src/utils/ResponseParser');
 const MultiAgentHandler = require('../../src/core/action_handlers/MultiAgentHandler');
 const SkillHandler = require('../../src/core/action_handlers/SkillHandler');
 const CommandHandler = require('../../src/core/action_handlers/CommandHandler');
+const ActionExecutionGate = require('../../src/managers/ActionExecutionGate');
 const { CONFIG } = require('../../src/config');
+const skillManager = require('../../src/managers/SkillManager');
+const COMMAND_DEFS = require('../../src/config/commands');
+const fs = require('fs');
+const path = require('path');
+
+const MCP_CONFIG_PATH = path.resolve(process.cwd(), 'data', 'mcp-servers.json');
+
+function normalizeToken(value) {
+    return String(value || '').trim().toLowerCase().replace(/_/g, '-');
+}
+
+function loadEnabledMcpTools() {
+    try {
+        if (!fs.existsSync(MCP_CONFIG_PATH)) return [];
+        const parsed = JSON.parse(fs.readFileSync(MCP_CONFIG_PATH, 'utf8'));
+        const servers = Array.isArray(parsed) ? parsed.filter((item) => item && item.enabled !== false) : [];
+        const output = [];
+        for (const server of servers) {
+            for (const tool of (server.cachedTools || [])) {
+                if (!tool || !tool.name) continue;
+                output.push({
+                    server: String(server.name || '').trim(),
+                    name: String(tool.name || '').trim(),
+                    description: String(tool.description || '').trim()
+                });
+            }
+        }
+        return output.filter((item) => item.server && item.name);
+    } catch (_) {
+        return [];
+    }
+}
+
+function loadSlashCommandAliases() {
+    const aliases = new Set();
+    for (const item of (Array.isArray(COMMAND_DEFS) ? COMMAND_DEFS : [])) {
+        const cmd = String(item && item.command ? item.command : '').trim();
+        if (!cmd.startsWith('/')) continue;
+        const noSlash = cmd.slice(1).trim();
+        if (!noSlash) continue;
+        aliases.add(normalizeToken(noSlash));
+    }
+    return aliases;
+}
+
+const SLASH_COMMAND_ALIASES = loadSlashCommandAliases();
 
 function sanitizeReply(text) {
     if (!text) return "";
@@ -21,6 +68,131 @@ function sanitizeReply(text) {
 // 🧬 NeuroShunter (神經分流中樞 - 核心路由器)
 // ============================================================
 class NeuroShunter {
+    static _normalize(value) {
+        return String(value || '')
+            .toLowerCase()
+            .replace(/[^\p{L}\p{N}\s._/-]/gu, ' ')
+            .replace(/\s+/g, ' ')
+            .trim();
+    }
+
+    static _score(query, candidate) {
+        const q = this._normalize(query);
+        const c = this._normalize(candidate);
+        if (!q || !c) return 0;
+
+        let score = 0;
+        if (c.includes(q)) score += 8;
+        const tokens = q.split(' ').filter((token) => token.length >= 2);
+        for (const token of tokens) {
+            if (c.includes(token)) score += token.length >= 4 ? 3 : 2;
+        }
+        return score;
+    }
+
+    static _isCommandLikeAction(act) {
+        if (!act || typeof act !== 'object') return false;
+        if (act.action === 'command') return true;
+        return Boolean(
+            act.cmd ||
+            act.parameter ||
+            act.command ||
+            (act.parameters && typeof act.parameters === 'object' && act.parameters.command)
+        );
+    }
+
+    static _tryRecoverSlashAction(act) {
+        if (!act || typeof act !== 'object') return null;
+        const actionName = String(act.action || '').trim();
+        if (!actionName) return null;
+        if (['command', 'mcp_call', 'multi_agent'].includes(actionName)) return null;
+
+        const normalized = normalizeToken(actionName.replace(/^\//, ''));
+        if (!SLASH_COMMAND_ALIASES.has(normalized)) return null;
+
+        const tail =
+            typeof act.parameter === 'string' ? act.parameter.trim() :
+                (typeof act.parameters === 'string' ? act.parameters.trim() : '');
+        const slashCommand = `/${normalized.replace(/-/g, '_')}${tail ? ` ${tail}` : ''}`;
+        return {
+            action: {
+                action: 'command',
+                parameter: slashCommand
+            },
+            note: `🧭 [Routing] 偵測到 action **${actionName}** 是斜線指令，已改寫為 shell lane：\`${slashCommand}\``
+        };
+    }
+
+    static _tryRecoverAsMcpCall(act) {
+        if (!act || typeof act !== 'object') return null;
+        const actionName = String(act.action || '').trim();
+        if (!actionName) return null;
+        if (['command', 'mcp_call', 'multi_agent'].includes(actionName)) return null;
+
+        const tools = loadEnabledMcpTools();
+        const normalizedAction = normalizeToken(actionName);
+        const exactMatches = tools.filter((item) => normalizeToken(item.name) === normalizedAction);
+        if (exactMatches.length === 0) return null;
+        if (exactMatches.length > 1) {
+            const choices = exactMatches
+                .slice(0, 4)
+                .map((item) => `\`${item.server}/${item.name}\``)
+                .join(', ');
+            return {
+                ambiguous: true,
+                note: `⚠️ [Routing] action **${actionName}** 對應多個 MCP 工具，請指定 server：${choices}`
+            };
+        }
+
+        const matched = exactMatches[0];
+        const parameters = act.parameters && typeof act.parameters === 'object'
+            ? act.parameters
+            : (act.args && typeof act.args === 'object' ? act.args : {});
+
+        return {
+            action: {
+                action: 'mcp_call',
+                server: matched.server,
+                tool: matched.name,
+                parameters,
+            },
+            note: `🧭 [Routing] 偵測到 action **${actionName}** 為 MCP 工具名稱，已改寫為 **mcp_call ${matched.server}/${matched.name}**`
+        };
+    }
+
+    static _buildUnknownActionMessage(actionName) {
+        const skills = (() => {
+            try {
+                return skillManager.listSkills();
+            } catch (_) {
+                return [];
+            }
+        })();
+        const mcpTools = loadEnabledMcpTools();
+
+        const skillHints = (Array.isArray(skills) ? skills : [])
+            .map((skill) => ({
+                name: String(skill && skill.name ? skill.name : '').trim(),
+                score: this._score(actionName, `${skill && skill.name ? skill.name : ''} ${skill && skill.description ? skill.description : ''}`),
+            }))
+            .filter((item) => item.name && item.score > 0)
+            .sort((a, b) => b.score - a.score || a.name.localeCompare(b.name))
+            .slice(0, 3)
+            .map((item) => `\`${item.name}\``);
+
+        const mcpHints = mcpTools
+            .map((tool) => ({
+                id: `${tool.server}/${tool.name}`,
+                score: this._score(actionName, `${tool.server} ${tool.name} ${tool.description}`),
+            }))
+            .filter((item) => item.score > 0)
+            .sort((a, b) => b.score - a.score || a.id.localeCompare(b.id))
+            .slice(0, 3)
+            .map((item) => `\`${item.id}\``);
+
+        return `❌ 無法識別 action **${actionName}**。\n建議改用以下之一：\n- command: \`{"action":"command","parameter":"<native command>"}\`\n- skill action: ${skillHints.join(', ') || '（無）'}\n- mcp_call: ${mcpHints.join(', ') || '（無）'}`;
+    }
+
     static async dispatch(ctx, rawResponse, brain, controller, options = {}) {
         let textToParse = rawResponse;
         let attachments = options.attachments || [];
@@ -116,8 +288,35 @@ class NeuroShunter {
         if (parsed.actions.length > 0) {
             console.log(`[GOLEM_ACTION] (${shouldSuppressReply ? 'Silent' : 'Normal'})\n${JSON.stringify(parsed.actions, null, 2)}`);
             const normalActions = [];
+            const rejectedActions = [];
 
-            for (const act of parsed.actions) {
+            for (const originalAct of parsed.actions) {
+                let act = originalAct;
+
+                const slashRecovered = this._tryRecoverSlashAction(act);
+                if (slashRecovered && slashRecovered.action) {
+                    act = slashRecovered.action;
+                    if (!shouldSuppressReply) await ctx.reply(slashRecovered.note);
+                }
+
+                const mcpRecovered = this._tryRecoverAsMcpCall(act);
+                if (mcpRecovered && mcpRecovered.ambiguous) {
+                    if (!shouldSuppressReply) await ctx.reply(mcpRecovered.note);
+                    continue;
+                }
+                if (mcpRecovered && mcpRecovered.action) {
+                    act = mcpRecovered.action;
+                    if (!shouldSuppressReply) await ctx.reply(mcpRecovered.note);
+                }
+
+                const gate = ActionExecutionGate.validate(act);
+                if (!gate.ok) {
+                    rejectedActions.push({ action: act, error: gate.error, code: gate.code });
+                    continue;
+                }
+                if (gate.normalizedAction && gate.normalizedAction !== act.action) {
+                    act.action = gate.normalizedAction;
+                }
                 switch (act.action) {
                     case 'multi_agent':
                         await MultiAgentHandler.execute(ctx, act, controller, brain);
@@ -134,6 +333,28 @@ class NeuroShunter {
                             normalActions.push(act);
                         }
                         break;
+                }
+            }
+
+            if (rejectedActions.length > 0) {
+                const reasonText = rejectedActions
+                    .map((item, idx) => {
+                        const compactAction = JSON.stringify(item.action || {})
+                            .replace(/\s+/g, ' ')
+                            .slice(0, 220);
+                        return `- [${idx + 1}] ${item.code}: ${item.error} | action=${compactAction}`;
+                    })
+                    .join('\n');
+                console.warn(`[ActionGate] Rejected ${rejectedActions.length} invalid actions:\n${reasonText}`);
+                if (!shouldSuppressReply) {
+                    const firstUnknown = rejectedActions.find((item) => item.code === 'UNKNOWN_ACTION');
+                    if (firstUnknown && firstUnknown.action && firstUnknown.action.action) {
+                        await ctx.reply(this._buildUnknownActionMessage(String(firstUnknown.action.action)));
+                    }
+                    await ctx.reply(
+                        `⚠️ 已阻擋 ${rejectedActions.length} 個無效行動（格式或權限不符）。\n` +
+                        `請改用有效 action（command / mcp_call / 已安裝技能）。`
+                    );
                 }
             }
 

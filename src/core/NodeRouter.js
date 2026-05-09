@@ -83,6 +83,9 @@ function extractStockSymbolsFromText(text) {
 class NodeRouter {
     static async handle(ctx, brain) {
         const text = (ctx.text || "").trim();
+        const lowerText = text.toLowerCase();
+        const isNewCommand = /^\/new$/.test(lowerText);
+        const isNewMemoryCommand = /^\/(new[_-]?memory|memory[_-]?reset)$/.test(lowerText);
         const isWeb = !ctx.reply; // 判斷是否為網頁端 (無原生 reply 函數)
 
         // 輔助函式：統一回覆邏輯
@@ -101,7 +104,10 @@ class NodeRouter {
             return await reply(`☕ **感謝您的支持！**\n\n${CONFIG.DONATE_URL}\n\n(Golem 覺得開心 🤖❤️)`);
         }
 
-        if (text === '/new') {
+        if (isNewCommand) {
+            if (ctx.isAdmin !== true) {
+                return await reply("⛔ 權限不足：/new 僅限管理員使用。");
+            }
             if (!brain) {
                 return await reply("⚠️ 大腦尚未初始化，無法執行 /new。");
             }
@@ -121,7 +127,10 @@ class NodeRouter {
             }
         }
 
-        if (text === '/new_memory') {
+        if (isNewMemoryCommand) {
+            if (ctx.isAdmin !== true) {
+                return await reply("⛔ 權限不足：/new_memory 僅限管理員使用。");
+            }
             if (!brain) {
                 return await reply("⚠️ 大腦尚未初始化，無法執行 /new_memory。");
             }

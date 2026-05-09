@@ -129,6 +129,7 @@ ${selectedPrompt}
 - For local OS/repo/file operations, prioritize \`{"action":"command","parameter":"..."}\`.
 - For built-in packaged capabilities, use exact skill action names only.
 - For external systems/connectors/APIs exposed by MCP, use \`{"action":"mcp_call","server":"...","tool":"...","parameters":{...}}\`.
+- Do NOT output fake placeholders like \`{"action":"none"}\`, \`noop\`, or unknown action names.
 - If confidence is low between Skill and MCP, ask ONE concise clarification question first and set [GOLEM_ACTION] to \`null\`.
 - Never invent action names, server names, or tool names.
 11. COMMAND RECALL:
@@ -275,6 +276,7 @@ ${text}`;
 
         systemPrompt += `\n\n### 🎯 EXECUTION CATALOG (LOCAL AGENT)\n`;
         systemPrompt += `- Primary mission: operate as a local execution agent on host OS (${systemFingerprint}).\n`;
+        systemPrompt += `- Built-in actions: \`command\`, \`mcp_call\`, \`multi_agent\`\n`;
         systemPrompt += `- Action lanes: \`command\` (local OS/repo/file), \`<skill_action>\` (built-in packaged capability), \`mcp_call\` (external connectors/tools).\n`;
         systemPrompt += `- Skill actions (${safeSkillActions.length}): ${shownSkillActions.length > 0 ? shownSkillActions.map((name) => `\`${name}\``).join(', ') : '（none）'}\n`;
         if (hiddenSkillCount > 0) {
@@ -317,6 +319,7 @@ ${maxResponseWords > 0 ? `- Length: 🚨 STRICT LIMIT 🚨 Keep your ENTIRE repl
   2. 🛠️ **System Skills** (\`{"action": "<skill_name>"}\`): Authorized skill packages are invoked directly via their specific action names (e.g., \`moltbot\`).
   3. 🔌 **MCP Tools** (\`{"action": "mcp_call", "server": "...", "tool": "...", "parameters": {...}}\`): Use this to call external Model Context Protocol integrations. You MUST include the server, tool, and parameters fields.
 - 🚫 **WARNING**: DO NOT use hallucinated scripts like 'shell-executor.js'. Use only native commands or authorized actions.
+- 🚫 **NO FAKE ACTIONS**: If no action is needed, output \`null\` in [GOLEM_ACTION]. Never output fake action names.
 - **Example**:
 \`\`\`json
 [

@@ -8,6 +8,12 @@
   "entry": "index.js",
   "prompt": "skill.md",
   "toolsets": [],
-  "triggers": ["列出排程", "查看提醒", "有哪些排程", "list schedules", "scheduled tasks"],
+  "triggers": [
+    "列出排程",
+    "查看提醒",
+    "有哪些排程",
+    "list schedules",
+    "scheduled tasks"
+  ],
   "version": "1.0.0"
 }

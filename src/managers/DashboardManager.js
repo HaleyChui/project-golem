@@ -12,7 +12,9 @@ class DashboardManager {
             agentWorkerSendTimeouts: 0,
             agentWorkerIdleTimeouts: 0,
             agentWorkerDraftPendingChecks: 0,
-            lastAgentWorkerEvent: "無事件"
+            lastAgentWorkerEvent: "無事件",
+            actionGateRejections: 0,
+            lastActionGateReject: "無事件"
         };
         this._agentWorkerRegistry = new Set();
         // 4. 資料初始化
@@ -63,11 +65,17 @@ class DashboardManager {
             cleanMsg.includes('[Queue]')
             || cleanMsg.includes('[Dialogue Queue')
             || cleanMsg.includes('[Action Queue')
+            || cleanMsg.includes('[QueueState]')
             || cleanMsg.includes('隊列')
             || cleanMsg.includes('佇列')
         ) {
             // 處理隊列流量監控
             type = 'queue';
+            const queueStateMatch = cleanMsg.match(/\[QueueState\]\s+queue=(\d+)\s+processing=(\d+)/i);
+            if (queueStateMatch) {
+                this.state.queueCount = Number(queueStateMatch[1]) || 0;
+                return { type, msg, cleanMsg, raw: msg };
+            }
             const isEnqueue = cleanMsg.includes('加入隊列') || cleanMsg.includes('排入隊尾');
             const isDequeue =
                 cleanMsg.includes('從隊列取出')
@@ -78,6 +86,12 @@ class DashboardManager {
             if (isDequeue) this.state.queueCount = Math.max(0, this.state.queueCount - 1);
         } else if (cleanMsg.includes('[Memory]') || cleanMsg.includes('[Memory:Browser]')) {
             type = 'memory';
+        } else if (cleanMsg.includes('[ActionGate]')) {
+            type = 'action_gate';
+            this.state.actionGateRejections += 1;
+            const at = new Date().toLocaleTimeString();
+            const compact = cleanMsg.replace(/\s+/g, ' ').trim();
+            this.state.lastActionGateReject = `${compact.slice(0, 120)} @ ${at}`;
         }
 
         return { type, msg, cleanMsg, raw: msg };

@@ -2,7 +2,7 @@
   "source": "dashboard-stock-analysis",
   "dataStatus": "live-market-data",
   "marketFilter": "all",
-  "selectedRange": "1D",
+  "selectedRange": "3M",
   "selected": {
     "symbol": "2892",
     "yahooSymbol": "2892.TW",
@@ -17,7 +17,7 @@
     "dayHigh": 29.6,
     "dayLow": 29.05,
     "fiftyTwoWeekHigh": 30.5,
-    "fiftyTwoWeekLow": 24.78,
+    "fiftyTwoWeekLow": 25.463,
     "change": 0.3500000000000014,
     "changePercent": 1.2006861063464886,
     "volume": 39624454,
@@ -30,19 +30,19 @@
     "dataQuality": "live"
   },
   "indicators": {
-    "sma5": 29.5,
-    "sma20": 29.470000171661376,
-    "rsi14": 58.33335982426973,
-    "macd": 0.03550705381498176,
-    "macdSignal": 0.04085733244695823,
-    "macdHistogram": -0.005350278631976471,
-    "stochasticK": 33.332909477003675,
-    "stochasticD": 27.777954382560704,
-    "volatility": 2.619211103545525,
-    "maxDrawdown": -0.6837632921006944,
-    "avgVolume20": 708111.15,
-    "volumeRatio": 0,
-    "distanceToSma20Percent": 0.1017978560022968
+    "sma5": 28.81999969482422,
+    "sma20": 28.652499771118165,
+    "rsi14": 60,
+    "macd": 0.06234546281549669,
+    "macdSignal": -0.03927586091868959,
+    "macdHistogram": 0.10162132373418628,
+    "stochasticK": 93.33330790201822,
+    "stochasticD": 84.34994413469624,
+    "volatility": 16.869774429283556,
+    "maxDrawdown": -6.333332061767578,
+    "avgVolume20": 27914011.1,
+    "volumeRatio": 1.4123352197133718,
+    "distanceToSma20Percent": 2.9578579029817083
   },
   "news": {
     "symbol": "2892",
@@ -76,10 +76,10 @@
       {
         "source": "DuckDuckGo HTML search",
         "status": "ok",
-        "count": 6
+        "count": 0
       }
     ],
-    "fetchedAt": "2026-05-09T00:13:53.566Z",
+    "fetchedAt": "2026-05-09T09:56:53.912Z",
     "results": [
       {
         "title": "ZIM to Release First Quarter 2026 Results on Wednesday, May 20, 2026",
@@ -87,41 +87,6 @@
         "snippet": "PR Newswire",
         "source": "Yahoo Finance · PR Newswire",
         "publishedAt": "2026-04-29T12:00:00.000Z"
-      },
-      {
-        "title": "第一金首度全配現金1.3元不發股票 股價黑翻紅小漲1% 成交量居金融股之冠 - Yahoo奇摩股市",
-        "url": "https://tw.stock.yahoo.com/news/第一金首度全配現金13元不發股票-股價黑翻紅小漲1-成交量居金融股之冠-014627660.html",
-        "snippet": "第一金今日股價以28.3元盤下開出後，一度回落28.25元，跌幅約1.05%，所幸盤中買盤回溫，漲1.23%至28.9元，順利翻紅；量能方面，開盤1小時成交量即突破2.5萬張，超過昨日的1.9萬張，交投明顯熱絡。",
-        "source": "tw.stock.yahoo.com/news/第一金首度全配現金13元不發股票-股價黑翻紅小漲1-成交量居金融股之冠-014627660.html",
-        "publishedAt": ""
-      },
-      {
-        "title": "2892 第一金 公告訊息 - 代子公司第一銀行公告董事會決議之114年度可分配盈餘轉增資發行新股案 - 發布時間:2026 ...",
-        "url": "https://goodinfo.tw/tw/data/StockAnnounceDetail.asp?STOCK_ID=2892&CLAIM_TIME=2026/04/17+14:47:07&SUBJECT=代子公司第一銀行公告董事會決議之114年度可分配盈餘轉增資發行新股案",
-        "snippet": "2892 第一金 公告訊息 - 代子公司第一銀行公告董事會決議之114年度可分配盈餘轉增資發行新股案 - 發布時間:2026/04/17 14:47:07 - Goodinfo!台灣股市資訊網",
-        "source": "goodinfo.tw/tw/data/StockAnnounceDetail.asp?STOCK_ID=2892&CLAIM_TIME=2026/04/17+14:47:07&SUBJECT=代子公司第一銀行公告董事會決議之114年度可分配盈餘轉增資發行新股案",
-        "publishedAt": ""
-      },
-      {
-        "title": "【2026/03月營收公告】第一金 (2892) 三月營收63.45億元，表現亮眼、呈現雙成長，年增19.43%",
-        "url": "https://cmnews.com.tw/article/cmoneyaicurator-89568344-38a2-11f1-8e65-ea73b827d562",
-        "snippet": "金融-金控 第一金 (2892) 公布3月 合併營收63.45億元MoM +6.48%、YoY +19.43%，雙雙成長、營收表現亮眼； 累計2026年前3個月營收約192.99億，較去年同期 YoY +16.56%。 法人機構平均預估年度稅後純益279.82億元、 預估EPS介於 1.87~2.05元之間。 想知道更多股市相關資訊，可點擊下方連結，從籌碼K線APP查詢哦!",
-        "source": "cmnews.com.tw/article/cmoneyaicurator-89568344-38a2-11f1-8e65-ea73b827d562",
-        "publishedAt": ""
-      },
-      {
-        "title": "2892 第一金 - 不發股票了!第一金首度全配現金 1.3元股息次高、殖利率4....-股市爆料同學會 - 理財寶",
-        "url": "https://www.cmoney.tw/forum/article/178548041",
-        "snippet": "董事會29日通過每股配發1.3元現金股息，首度「全配現金」，單一現金配發更寫史上次高紀錄。 以29日收盤價28.55元計算，現金殖利率4.55%，在已公布股利的金控中排名第三，成為高殖利率概念股。 此次股利最大亮點，在於全面取消股票股利，改採全數現金發放。 以2025年每股稅後純益1.87元計算，現金盈餘分配率達69.5%，寫近七年新高，顯示回饋股東力道明顯升溫。 第一金控主管指出，此次政策轉向有三大原因。 首先，資本體質已明顯強化，第一銀行身為系統性重要銀行（D-SIBs），過去三年因應高資本要求，股利配發相對保守。 截至2025年底，第一銀行普通股權益比率（CET1）達11.7%，第一類資本比率13.22%、資本適足率15.46%，三項指標全數符合監理門檻，為提高配發率奠定基礎。",
-        "source": "www.cmoney.tw/forum/article/178548041",
-        "publishedAt": ""
-      },
-      {
-        "title": "46萬股東注意!第一金宣布配息1.3元 股息殖利率約4.55％ | ETtoday財經雲 | ETtoday新聞雲",
-        "url": "https://finance.ettoday.net/news/3157718",
-        "snippet": "擁有超過46.1萬名股東第一金（2892）於今（29）日公布今年股利，決議每股配發1.3元現金股息，係為2003年金控成立以來，首度未搭配股票股利進行股利發放，以今（29）日28.55元收盤價計算，潛在股息殖利率約4.55%。",
-        "source": "finance.ettoday.net/news/3157718",
-        "publishedAt": ""
       }
     ]
   },
@@ -140,7 +105,7 @@
       "dayHigh": 29.6,
       "dayLow": 29.05,
       "fiftyTwoWeekHigh": 30.5,
-      "fiftyTwoWeekLow": 24.78,
+      "fiftyTwoWeekLow": 25.463,
       "change": 0.3500000000000014,
       "changePercent": 1.2006861063464886,
       "volume": 39624454,
@@ -213,11 +178,11 @@
     "count": 3
   },
   "quoteErrors": [],
-  "generatedAt": "2026-05-09T00:13:53.566Z",
+  "generatedAt": "2026-05-09T09:56:53.912Z",
   "refresh": {
-    "trigger": "skill-stock-dashboard",
+    "trigger": "telegram-stock-dashboard-command",
     "status": "ok",
-    "previousSavedAt": "2026-05-08T23:17:27.062Z"
+    "previousSavedAt": "2026-05-09T09:56:52.171Z"
   },
-  "savedAt": "2026-05-09T00:13:53.566Z"
+  "savedAt": "2026-05-09T09:56:53.912Z"
 }

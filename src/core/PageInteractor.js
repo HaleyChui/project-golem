@@ -17,6 +17,16 @@ class PageInteractor {
         this.doctor = doctor;
     }
 
+    static getLargePayloadThreshold() {
+        const raw = Number(process.env.GOLEM_COMPOSER_CHUNK_THRESHOLD || 12000);
+        return Number.isFinite(raw) && raw > 0 ? raw : 12000;
+    }
+
+    static getComposerInsertChunkSize() {
+        const raw = Number(process.env.GOLEM_COMPOSER_CHUNK_SIZE || 3500);
+        return Number.isFinite(raw) && raw > 0 ? raw : 3500;
+    }
+
     /**
      * 清洗 DOMDoctor 回傳的 Selector 字串
      * @param {string} rawSelector
@@ -264,11 +274,12 @@ class PageInteractor {
 
         let insertState = null;
         const minimumExpectedLength = Math.min(10, textToPaste.trim().length);
+        const shouldChunkInsert = payloadLength > PageInteractor.getLargePayloadThreshold();
 
         // 2. 優先使用 Playwright fill() 對 contenteditable 寫入。這會走瀏覽器原生
         // input/change 事件，比單純把文字塞進 DOM 更容易讓 Gemini 啟用送出鈕。
         try {
-            if (this.page.locator && textToPaste.length > 0) {
+            if (!shouldChunkInsert && this.page.locator && textToPaste.length > 0) {
                 const activeComposer = this.page.locator('[data-golem-active-composer="true"]').last();
                 await activeComposer.fill(textToPaste, { timeout: 15000 });
                 const fillState = await this._readComposerState('[data-golem-active-composer="true"]');
@@ -290,7 +301,27 @@ class PageInteractor {
         try {
             if (this.page.keyboard && typeof this.page.keyboard.insertText === 'function') {
                 if (!insertState) {
-                    await this.page.keyboard.insertText(textToPaste);
+                    if (shouldChunkInsert) {
+                        const chunkSize = PageInteractor.getComposerInsertChunkSize();
+                        const totalChunks = Math.max(1, Math.ceil(textToPaste.length / chunkSize));
+                        const startedAt = Date.now();
+                        console.log(`🧩 [PageInteractor] 大文本分塊植入啟動: ${textToPaste.length} chars, chunks=${totalChunks}, chunkSize=${chunkSize}`);
+                        for (let idx = 0; idx < totalChunks; idx += 1) {
+                            const start = idx * chunkSize;
+                            const end = Math.min(textToPaste.length, start + chunkSize);
+                            const chunk = textToPaste.slice(start, end);
+                            await this.page.keyboard.insertText(chunk);
+                            if (idx === 0 || idx === totalChunks - 1 || (idx + 1) % 3 === 0) {
+                                const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1);
+                                console.log(`🧩 [PageInteractor] composer 注入進度 ${idx + 1}/${totalChunks} (${end}/${textToPaste.length}, ${elapsed}s)`);
+                            }
+                            if (idx < totalChunks - 1) {
+                                await new Promise(r => setTimeout(r, 20));
+                            }
+                        }
+                    } else {
+                        await this.page.keyboard.insertText(textToPaste);
+                    }
                 }
                 const keyboardState = await this._readComposerState(targetSelector);
                 if (!insertState && keyboardState && keyboardState.ok && keyboardState.length >= minimumExpectedLength) {

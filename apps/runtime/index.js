@@ -640,7 +640,7 @@ async function handleUnifiedMessage(ctx, forceTargetId = null) {
         return;
     }
 
-    if (ctx.isAdmin && ctx.text && ctx.text.trim().toLowerCase() === '/new') {
+    if (ctx.isAdmin && ctx.text && /^\/new$/i.test(ctx.text.trim())) {
         await ctx.reply("🔄 收到 /new 指令！正在為您開啟全新的大腦對話神經元...");
         try {
             const isApiBackend = brain.backend === 'ollama' || brain.backend === 'lmstudio';
@@ -659,19 +659,22 @@ async function handleUnifiedMessage(ctx, forceTargetId = null) {
         return;
     }
 
-    if (ctx.isAdmin && ctx.text && ctx.text.trim().toLowerCase() === '/new_memory') {
+    if (ctx.isAdmin && ctx.text && /^\/(new[_-]?memory|memory[_-]?reset)$/i.test(ctx.text.trim())) {
         await ctx.reply("💥 收到 /new_memory 指令！正在為您物理清空底層 DB 並執行深度轉生...");
         try {
+            let clearResult = null;
             if (brain.memoryDriver && typeof brain.memoryDriver.clearMemory === 'function') {
-                await brain.memoryDriver.clearMemory();
+                clearResult = await brain.memoryDriver.clearMemory();
             }
             const isApiBackend = brain.backend === 'ollama' || brain.backend === 'lmstudio';
             const apiBackendLabel = brain.backend === 'lmstudio' ? 'LM Studio' : 'Ollama';
             if (brain.page || isApiBackend) {
                 await brain.init(true);
+                const clearedCount = (clearResult && Number.isFinite(clearResult.cleared))
+                    ? ` (清除 ${clearResult.cleared} 筆)` : '';
                 await ctx.reply(isApiBackend
-                    ? `✅ 記憶庫 DB 已清空，且 ${apiBackendLabel} 大腦脈絡已重新初始化完成。`
-                    : "✅ 記憶庫 DB 已徹底清空格式化！網頁也已重置，這是一個 100% 空白、無任何歷史包袱的 Golem 實體。");
+                    ? `✅ 記憶庫 DB 已清空${clearedCount}，且 ${apiBackendLabel} 大腦脈絡已重新初始化完成。`
+                    : `✅ 記憶庫 DB 已清空${clearedCount}，網頁也已重置，這是一個 100% 空白、無任何歷史包袱的 Golem 實體。`);
             } else {
                 await ctx.reply("⚠️ 找不到活躍的網頁視窗。");
             }
