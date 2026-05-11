@@ -2,7 +2,8 @@ const fs = require('fs');
 const path = require('path');
 
 const DEFAULT_PACKAGE_DIRS = [
-    path.join(process.cwd(), 'src', 'skills', 'modules'),
+    path.join(process.cwd(), 'src', 'skills'),          // ✅ 直接放在 src/skills/ 下的技能
+    path.join(process.cwd(), 'src', 'skills', 'modules'), // 向後相容：舊的 modules/ 子目錄
     path.join(process.cwd(), 'src', 'skills', 'generated'),
 ];
 

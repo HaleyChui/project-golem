@@ -346,15 +346,59 @@ class NeuroShunter {
                     })
                     .join('\n');
                 console.warn(`[ActionGate] Rejected ${rejectedActions.length} invalid actions:\n${reasonText}`);
-                if (!shouldSuppressReply) {
+
+                // ── 建構結構化的 [System Observation] 回饋給 Golem ──────────
+                // 讓 Golem 知道哪些 action 失敗、原因是什麼，並能自行修正
+                const observationLines = [
+                    `[System Observation] ⚠️ ActionGate 攔截報告：${rejectedActions.length} 個 action 執行失敗`,
+                    '',
+                ];
+
+                for (const item of rejectedActions) {
+                    const actionName = String(item.action?.action || '(unknown)');
+                    observationLines.push(`❌ action="${actionName}" → 失敗原因: ${item.code}`);
+                    observationLines.push(`   詳情: ${item.error}`);
+
+                    if (item.code === 'TOOLSET_DISABLED') {
+                        observationLines.push(`   ⚡ 修正方式: 此技能存在但目前場景未啟用。請告知使用者需要切換場景，或直接輸出 /toolset <場景名稱> 指令。`);
+                    } else if (item.code === 'UNKNOWN_ACTION') {
+                        observationLines.push(`   ⚡ 修正方式: 此 action 不存在。請改用 command / mcp_call / 已安裝技能的 action 名稱。`);
+                    } else if (item.code === 'INVALID_MCP_CALL') {
+                        observationLines.push(`   ⚡ 修正方式: mcp_call 必須包含 server 和 tool 欄位。`);
+                    }
+                    observationLines.push('');
+                }
+
+                observationLines.push('請根據以上資訊修正你的 [GOLEM_ACTION]，或告知使用者需要的操作。');
+                const observationText = observationLines.join('\n');
+
+                // 透過 convoManager 注入 [System Observation]（讓 Golem 的下一輪能看到）
+                if (allowActions && controller && controller.convoManager) {
+                    await controller.convoManager.enqueue(ctx, observationText, {
+                        isPriority: true,
+                        bypassDebounce: true,
+                        isSystemFeedback: true,
+                        suppressReply: false,
+                        allowActions: true,
+                        actionDepth: actionDepth + 1,
+                        maxActionDepth,
+                    });
+                } else if (!shouldSuppressReply) {
+                    // fallback：直接 reply 給使用者（不走 feedback loop）
                     const firstUnknown = rejectedActions.find((item) => item.code === 'UNKNOWN_ACTION');
                     if (firstUnknown && firstUnknown.action && firstUnknown.action.action) {
                         await ctx.reply(this._buildUnknownActionMessage(String(firstUnknown.action.action)));
                     }
-                    await ctx.reply(
-                        `⚠️ 已阻擋 ${rejectedActions.length} 個無效行動（格式或權限不符）。\n` +
-                        `請改用有效 action（command / mcp_call / 已安裝技能）。`
-                    );
+                    const toolsetRejected = rejectedActions.filter(i => i.code === 'TOOLSET_DISABLED');
+                    if (toolsetRejected.length > 0) {
+                        const names = toolsetRejected.map(i => `\`${i.action?.action}\``).join(', ');
+                        await ctx.reply(`⚠️ 技能 ${names} 在目前場景未啟用。\n${toolsetRejected[0].error}`);
+                    } else {
+                        await ctx.reply(
+                            `⚠️ 已阻擋 ${rejectedActions.length} 個無效行動（格式或權限不符）。\n` +
+                            `請改用有效 action（command / mcp_call / 已安裝技能）。`
+                        );
+                    }
                 }
             }
 

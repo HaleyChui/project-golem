@@ -133,6 +133,7 @@ module.exports = function registerStaticRoutes(server) {
         '/dashboard/setup',
         '/dashboard/skills',
         '/dashboard/stocks',
+        '/dashboard/calendar',
         '/dashboard/action-gate',
         '/dashboard/system-setup'
     ];

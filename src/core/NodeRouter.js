@@ -333,22 +333,64 @@ class NodeRouter {
 
         if (text === '/skills') {
             try {
+                const SkillPackageRegistry = require('../managers/SkillPackageRegistry');
                 const SkillIndexManager = require('../managers/SkillIndexManager');
+                const MCPToolCatalog = require('../mcp/MCPToolCatalog');
+                const mcpPath = require('path').resolve(process.cwd(), 'data', 'mcp-servers.json');
+                const fsSync = require('fs');
+
+                // ── 1. 從 SkillPackageRegistry 取得所有已安裝的 package 技能（最即時）
+                const pkgs = SkillPackageRegistry.listSkillPackages({ userDataDir: brain.userDataDir })
+                    .filter(p => p.enabled !== false)
+                    .sort((a, b) => a.id.localeCompare(b.id));
+
+                // ── 2. 從 SQLite 補充 lib 技能（/learn 動態生成的技能也在這裡）
                 const index = new SkillIndexManager(brain.userDataDir);
-                const allSkills = await index.listAllSkills();
+                const dbSkills = await index.listAllSkills();
                 await index.close();
 
-                if (allSkills.length === 0) {
+                // 合併：以 package 為主，SQLite 補充 package 沒有的
+                const pkgIds = new Set(pkgs.map(p => p.id));
+                const libSkills = dbSkills.filter(s => !pkgIds.has(s.id));
+
+                // ── 3. MCP 工具摘要
+                let mcpSummary = '';
+                try {
+                    if (fsSync.existsSync(mcpPath)) {
+                        const servers = JSON.parse(fsSync.readFileSync(mcpPath, 'utf8'));
+                        const enabled = (Array.isArray(servers) ? servers : []).filter(s => s.enabled !== false);
+                        if (enabled.length > 0) {
+                            const toolCount = enabled.reduce((n, s) => n + (s.cachedTools?.length || 0), 0);
+                            mcpSummary = `\n\n🔌 **MCP 工具** (${enabled.length} 個伺服器 / ${toolCount} 個工具):\n`;
+                            mcpSummary += enabled.map(s => `• **${s.name}** — ${s.description || ''} (${s.cachedTools?.length || 0} 工具)`).join('\n');
+                        }
+                    }
+                } catch (_) {}
+
+                const totalSkills = pkgs.length + libSkills.length;
+                if (totalSkills === 0 && !mcpSummary) {
                     return await reply("📭 目前尚未安裝或同步任何技能。");
                 }
 
-                let skillMsg = "📚 **Golem 已安裝系統能力清單**:\n";
-                skillMsg += allSkills.map(s => `• **${s.id}**${s.name ? ` (${s.name})` : ''}`).join('\n');
-                skillMsg += "\n\n_以上能力皆已由 SQLite 索引完成，隨時待命。_";
+                let skillMsg = `📚 **Golem 已安裝系統能力清單** (共 ${totalSkills} 個技能):\n\n`;
+
+                if (pkgs.length > 0) {
+                    skillMsg += `**🧩 Package 技能** (${pkgs.length} 個):\n`;
+                    skillMsg += pkgs.map(p => `• **${p.id}**${p.name && p.name !== p.id ? ` — ${p.name}` : ''}${p.description ? `: ${p.description.slice(0, 60)}` : ''}`).join('\n');
+                }
+
+                if (libSkills.length > 0) {
+                    if (pkgs.length > 0) skillMsg += '\n\n';
+                    skillMsg += `**📖 動態技能** (${libSkills.length} 個):\n`;
+                    skillMsg += libSkills.map(s => `• **${s.id}**${s.name ? ` — ${s.name}` : ''}`).join('\n');
+                }
+
+                skillMsg += mcpSummary;
+                skillMsg += `\n\n_使用 \`/toolset\` 查看場景工具集，\`/toolset status\` 查看目前啟用的工具。_`;
 
                 return await reply(skillMsg);
             } catch (e) {
-                console.error("Failed to list skills from SQLite:", e);
+                console.error("Failed to list skills:", e);
                 return await reply(`❌ **讀取技能清單失敗**: ${e.message}`);
             }
         }
@@ -633,12 +675,27 @@ class NodeRouter {
 
             if (subCmd === 'status') {
                 const active = toolsetManager.getActiveScene();
-                const tools  = toolsetManager.getActiveTools();
+                const sceneTools = toolsetManager.getActiveTools(); // 場景內的工具
                 const scene  = SCENE_TOOLSETS[active];
-                return await reply(
-                    `${scene ? scene.emoji : '🔧'} **目前場景**: ${active}\n` +
-                    `📦 **已啟用工具** (${tools.length} 個):\n${tools.map(t => `• ${t}`).join('\n')}`
-                );
+
+                // 取得所有已安裝的 package 技能（不受場景限制）
+                const SkillPackageRegistry = require('../managers/SkillPackageRegistry');
+                const allPkgs = SkillPackageRegistry.listSkillPackages({ userDataDir: brain && brain.userDataDir })
+                    .filter(p => p.enabled !== false)
+                    .map(p => p.id)
+                    .sort();
+
+                // 場景內啟用的 vs 場景外（已安裝但目前場景未啟用）
+                const sceneSet = new Set(sceneTools);
+                const outsideScene = allPkgs.filter(id => !sceneSet.has(id));
+
+                let msg = `${scene ? scene.emoji : '🔧'} **目前場景**: ${active}\n`;
+                msg += `📦 **場景內啟用工具** (${sceneTools.length} 個):\n${sceneTools.map(t => `• ${t}`).join('\n')}`;
+                if (outsideScene.length > 0) {
+                    msg += `\n\n🧩 **已安裝但場景未啟用** (${outsideScene.length} 個):\n${outsideScene.map(t => `• ${t}`).join('\n')}`;
+                    msg += `\n\n_使用 \`/toolset <場景名稱>\` 切換場景，或 \`/toolset list\` 查看所有場景。_`;
+                }
+                return await reply(msg);
             }
 
             // 切換場景

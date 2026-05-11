@@ -6,7 +6,7 @@ const path = require('path');
 const ConfigManager = require('../../../config');
 
 async function run(ctx) {
-    const args = ctx.args || {};
+    const args = ctx.args || ctx.parameters || {};
     try {
         let { task, time } = args;
 

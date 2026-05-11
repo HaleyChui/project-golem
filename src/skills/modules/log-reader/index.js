@@ -2,7 +2,7 @@
 // 負責讀取與檢索每日日誌摘要
 
 async function run(ctx) {
-    const args = ctx.args || {};
+    const args = ctx.args || ctx.parameters || {};
 
     let logManager;
     if (ctx.brain && ctx.brain.chatLogManager) {

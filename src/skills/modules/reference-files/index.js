@@ -20,7 +20,7 @@ function formatFile(file) {
 }
 
 async function run(ctx) {
-    const args = ctx.args || {};
+    const args = ctx.args || ctx.parameters || {};
     const task = String(args.task || args.action || 'search').toLowerCase();
 
     if (task === 'list') {

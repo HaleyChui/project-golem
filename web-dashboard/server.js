@@ -24,6 +24,7 @@ const registerPromptPoolRoutes = require('./routes/api.prompt-pool');
 const registerRpgRoutes = require('./routes/api.rpg');
 const registerStockRoutes = require('./routes/api.stocks');
 const registerReferenceFileRoutes = require('./routes/api.reference-files');
+const registerCalendarRoutes = require('./routes/api.calendar');
 
 class WebServer {
     constructor(dashboard) {
@@ -203,6 +204,7 @@ class WebServer {
             registerRpgRoutes,
             registerStockRoutes,
             registerReferenceFileRoutes,
+            registerCalendarRoutes,
         ];
 
         routeFactories.forEach((factory) => {

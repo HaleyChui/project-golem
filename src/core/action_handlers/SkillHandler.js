@@ -116,13 +116,16 @@ class SkillHandler {
         if (dynamicSkill) {
             await ctx.reply(`🔌 執行技能: **${dynamicSkill.name}**...`);
             try {
+                // act.args 是技能的實際參數（內層），act 本身是 action 物件（外層）
+                // 優先使用 act.args，若無則 fallback 到 act.parameters，最後才是整個 act
+                const skillArgs = act.args || act.parameters || act;
                 const result = await dynamicSkill.run({
                     page: brain.page,
                     browser: brain.browser,
                     brain: brain,
                     log: console,
                     io: { ask: (q) => ctx.reply(q) },
-                    args: act
+                    args: skillArgs
                 });
                 if (result) {
                     console.log(`[Skill] ✅ ${dynamicSkill.name} 完成 (${String(result).length} chars)`);

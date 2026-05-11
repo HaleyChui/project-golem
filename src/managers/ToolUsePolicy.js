@@ -48,6 +48,10 @@ class ToolUsePolicy {
         const score = Number(candidate.score || 0);
 
         if (!request.shouldRoute) {
+            // 向量語意高度命中（score >= 20）時，即使不是明確操作指令也推薦
+            if (score >= 20) {
+                return { include: true, strength: 'consider', risk, requiresConfirmation: false, reason: 'vector_semantic_match' };
+            }
             return {
                 include: false,
                 strength: 'none',

@@ -35,6 +35,7 @@ class GolemBrain {
         this.userDataDir = options.userDataDir || path.resolve(ConfigManager.CONFIG.USER_DATA_DIR || './golem_memory');
         this.skillIndex = new SkillIndexManager(this.userDataDir);
         this.toolRouter = new ToolRouter({ userDataDir: this.userDataDir });
+        this.toolVectorIndex = null; // 延遲初始化，等 memoryDriver embedder 就緒後再建立
 
         this._isSharedSessionWorker = !!options.sharedSessionWorker;
         this._ownsBrowserContext = !this._isSharedSessionWorker;
@@ -262,6 +263,8 @@ class GolemBrain {
                     await this._initMemoryDriver();
                     this._markInitSegment(metrics, 'memory_driver_init', stageStart);
                 }
+                // 🔍 [ToolVectorIndex] 背景同步工具向量索引（非阻塞）
+                this._syncToolVectorIndex().catch(e => console.warn('[ToolVectorIndex] 背景同步失敗:', e.message));
 
                 {
                     const stageStart = Date.now();
@@ -363,6 +366,8 @@ class GolemBrain {
                 await this._initMemoryDriver();
                 this._markInitSegment(metrics, 'memory_driver_init', stageStart);
             }
+                // 🔍 [ToolVectorIndex] 背景同步工具向量索引（非阻塞）
+                this._syncToolVectorIndex().catch(e => console.warn('[ToolVectorIndex] 背景同步失敗:', e.message));
 
             // 4. Dashboard 整合 (可選)
             {
@@ -620,7 +625,7 @@ class GolemBrain {
             const reqId = ProtocolFormatter.generateReqId();
             const startTag = ProtocolFormatter.buildStartTag(reqId);
             const endTag = ProtocolFormatter.buildEndTag(reqId);
-            const routedText = this._withToolRoutingHint(text, isSystem, options);
+            const routedText = await this._withToolRoutingHint(text, isSystem, options);
             const payload = ProtocolFormatter.buildEnvelope(routedText, reqId, options);
 
             console.log(`📡 [Brain] 發送訊號: ${reqId} (含每回合強制洗腦引擎)${attachment ? ' 📎 含有附件' : ''}`);
@@ -714,7 +719,7 @@ class GolemBrain {
         return lines.join('\n');
     }
 
-    _withToolRoutingHint(text, isSystem = false, options = {}) {
+    async _withToolRoutingHint(text, isSystem = false, options = {}) {
         if (options.disableToolRouting === true) return text;
         if (options._segmentedBypass === true) return text;
         if (isSystem) return text;
@@ -725,13 +730,21 @@ class GolemBrain {
 
         try {
             const toolsetContext = this._resolveToolsetContext();
+            // 保留已注入的 toolVectorIndex，不要每次 new ToolRouter 覆蓋掉它
             this.toolRouter = new ToolRouter({
                 userDataDir: this.userDataDir,
                 activeScene: toolsetContext.activeScene,
-                activeTools: toolsetContext.activeTools
+                activeTools: toolsetContext.activeTools,
+                toolVectorIndex: this.toolVectorIndex || null,
             });
             const runtimeContext = this._buildRuntimeTurnContext(options);
-            const hint = this.toolRouter.buildRoutingHint(text);
+            // 優先使用 async 版本（向量搜尋），fallback 到同步版本
+            let hint;
+            if (this.toolVectorIndex) {
+                hint = await this.toolRouter.buildRoutingHintAsync(text);
+            } else {
+                hint = this.toolRouter.buildRoutingHint(text);
+            }
             if (!hint) return `${runtimeContext}\n\n${text}`;
             return `${runtimeContext}\n\n${hint}\n\n${text}`;
         } catch (e) {
@@ -889,7 +902,7 @@ class GolemBrain {
 
         const responseText = await this._withTransportLock(async () => {
             const reqId = ProtocolFormatter.generateReqId();
-            const routedText = this._withToolRoutingHint(text, isSystem, options);
+            const routedText = await this._withToolRoutingHint(text, isSystem, options);
             const payload = ProtocolFormatter.buildEnvelope(routedText, reqId, options);
             console.log(`📡 [Brain][Ollama] 發送訊號: ${reqId}`);
 
@@ -914,7 +927,7 @@ class GolemBrain {
 
         const responseText = await this._withTransportLock(async () => {
             const reqId = ProtocolFormatter.generateReqId();
-            const routedText = this._withToolRoutingHint(text, isSystem, options);
+            const routedText = await this._withToolRoutingHint(text, isSystem, options);
             const payload = ProtocolFormatter.buildEnvelope(routedText, reqId, options);
             console.log(`📡 [Brain][LMStudio] 發送訊號: ${reqId}`);
 
@@ -1109,6 +1122,87 @@ class GolemBrain {
             console.warn("🔄 [System] 記憶引擎降級為 SystemNativeDriver...");
             this.memoryDriver = new SystemNativeDriver();
             await this.memoryDriver.init();
+        }
+    }
+
+    /**
+     * 在 memoryDriver 初始化後同步工具向量索引。
+     * 使用與記憶系統相同的 embedder，不重複載入模型。
+     * 非阻塞：失敗不影響主流程。
+     */
+    async _syncToolVectorIndex() {
+        // 不論是否有 embedder，都先同步 package 技能到 toolsetManager（讓 ActionGate 放行）
+        try {
+            const { toolsetManager } = require('../managers/ToolsetManager');
+            toolsetManager.syncInstalledPackageSkills(this.userDataDir);
+        } catch (e) {
+            console.warn(`⚠️ [ToolsetManager] 動態技能同步失敗: ${e.message}`);
+        }
+
+        // 僅 LanceDB 模式支援（SystemNativeDriver 無 embedder）
+        if (!this.memoryDriver || typeof this.memoryDriver.embedder === 'undefined' || !this.memoryDriver.embedder) {
+            console.log(`ℹ️ [ToolVectorIndex] 記憶引擎無 embedder，跳過向量索引同步`);
+            return;
+        }
+        try {
+            const ToolVectorIndex = require('./ToolVectorIndex');
+            if (!this.toolVectorIndex) {
+                this.toolVectorIndex = new ToolVectorIndex(this.userDataDir, this.memoryDriver.embedder);
+            }
+
+            const SkillPackageRegistry = require('../managers/SkillPackageRegistry');
+            const MCPToolCatalog = require('../mcp/MCPToolCatalog');
+            const fs = require('fs');
+            const MCP_CONFIG_PATH = require('path').resolve(process.cwd(), 'data', 'mcp-servers.json');
+
+            // 收集所有技能
+            const skillItems = SkillPackageRegistry.listSkillPackages({ userDataDir: this.userDataDir })
+                .filter(pkg => pkg.enabled !== false)
+                .map(pkg => ({
+                    id: pkg.id,
+                    kind: 'skill',
+                    name: pkg.name || pkg.id,
+                    description: pkg.description || '',
+                    triggers: pkg.manifest?.triggers || [],
+                }));
+
+            // 收集所有 MCP 工具
+            const mcpItems = [];
+            try {
+                if (fs.existsSync(MCP_CONFIG_PATH)) {
+                    const servers = JSON.parse(fs.readFileSync(MCP_CONFIG_PATH, 'utf8'));
+                    for (const server of (Array.isArray(servers) ? servers : [])) {
+                        if (server.enabled === false) continue;
+                        for (const tool of (server.cachedTools || [])) {
+                            if (!tool?.name) continue;
+                            mcpItems.push({
+                                id: `${server.name}/${tool.name}`,
+                                kind: 'mcp',
+                                name: tool.name,
+                                description: tool.description || '',
+                                serverName: server.name,
+                                triggers: [],
+                            });
+                        }
+                    }
+                }
+            } catch (_) {}
+
+            const allItems = [...skillItems, ...mcpItems];
+            const currentIds = allItems.map(i => i.id);
+
+            await this.toolVectorIndex.upsertMany(allItems);
+            await this.toolVectorIndex.pruneDeleted(currentIds);
+
+            // 把 toolVectorIndex 注入 toolRouter，讓它能做向量搜尋
+            this.toolRouter = new (require('../managers/ToolRouter'))({
+                userDataDir: this.userDataDir,
+                toolVectorIndex: this.toolVectorIndex,
+            });
+
+            console.log(`✅ [ToolVectorIndex] 向量索引同步完成 (skills=${skillItems.length}, mcp=${mcpItems.length})`);
+        } catch (e) {
+            console.warn(`⚠️ [ToolVectorIndex] 向量索引同步失敗（不影響主流程）: ${e.message}`);
         }
     }
 

@@ -218,6 +218,40 @@ class AutonomyManager {
                 }
             }
         }
+
+        // ── 📅 協作日曆提醒 ──────────────────────────────────────────────────
+        try {
+            const CalendarCollabService = require('../services/CalendarCollabService');
+            const dueReminders = CalendarCollabService.checkDueReminders();
+            if (dueReminders.length > 0) {
+                console.log(`📅 [TimeWatcher] 發現 ${dueReminders.length} 個日曆提醒！`);
+                for (const { event, triggerType } of dueReminders) {
+                    const adminCtx = await this.getAdminContext();
+                    const startStr = new Date(event.start).toLocaleString('zh-TW', {
+                        timeZone: 'Asia/Taipei', hour12: false,
+                        month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit'
+                    });
+                    const ownerLabel = event.owner === 'golem' ? '你自己的' : '使用者的';
+
+                    let prompt;
+                    if (triggerType === 'start') {
+                        prompt = `【📅 行程開始提醒】\n${ownerLabel}行程「${event.title}」現在開始了！\n時間：${startStr}${event.location ? `\n地點：${event.location}` : ''}${event.description ? `\n備註：${event.description}` : ''}\n\n請主動通知使用者，語氣自然友善。若這是你自己的任務，請開始執行。`;
+                    } else {
+                        prompt = `【📅 行程即將開始】\n${ownerLabel}行程「${event.title}」將在 ${event.reminderMinutes} 分鐘後開始。\n時間：${startStr}${event.location ? `\n地點：${event.location}` : ''}${event.description ? `\n備註：${event.description}` : ''}\n\n請主動提醒使用者，語氣自然友善。`;
+                    }
+
+                    if (this.convoManager) {
+                        await this.convoManager.enqueue(adminCtx, prompt, {
+                            isPriority: true,
+                            bypassDebounce: true,
+                            isSystemFeedback: false,
+                        });
+                    }
+                }
+            }
+        } catch (e) {
+            console.error('❌ [TimeWatcher] 日曆提醒掃描失敗:', e.message);
+        }
     }
 
     resumeOrScheduleAwakening() {

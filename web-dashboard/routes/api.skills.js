@@ -240,6 +240,8 @@ async function collectInstalledSkills(server, golemIdQuery) {
     }
 
     const userDataDir = await resolveSkillUserDataDir(server, golemIdQuery);
+    const userSkillPackageDir = SkillPackageRegistry.getUserSkillPackageDir(userDataDir);
+
     for (const pkg of SkillPackageRegistry.listSkillPackages({ userDataDir })) {
         if (skillsMap.has(pkg.id)) continue;
         const content = SkillPackageRegistry.buildPromptContent(pkg);
@@ -252,9 +254,33 @@ async function collectInstalledSkills(server, golemIdQuery) {
             category: pkg.type || 'core',
         }, enabledSkills);
         if (normalized) {
-            normalized.isEnabled = pkg.type === 'user_generated'
-                ? pkg.enabled !== false
-                : normalized.isEnabled && pkg.enabled !== false;
+            // isEnabled 判斷優先序：
+            // 1. MANDATORY_SKILLS → 永遠啟用
+            // 2. manifest.enabled === false → 停用（使用者手動關閉）
+            // 3. OPTIONAL_SKILLS env 有此 id → 啟用
+            // 4. manifest.enabled === true 且不在 MANDATORY/OPTIONAL → 預設啟用（新安裝的技能）
+            const isMandatory = MANDATORY_SKILLS.includes(pkg.id);
+            const inOptionalEnv = enabledSkills.has(pkg.id);
+            const manifestEnabled = pkg.enabled !== false; // manifest.json 的 enabled 欄位
+
+            if (isMandatory) {
+                normalized.isEnabled = true;
+            } else if (!manifestEnabled) {
+                normalized.isEnabled = false; // 使用者明確關閉
+            } else if (inOptionalEnv) {
+                normalized.isEnabled = true;
+            } else {
+                // 新安裝的 package 技能，manifest 預設 enabled=true，顯示為啟用
+                normalized.isEnabled = manifestEnabled;
+            }
+
+            // 使用者安裝的技能（在 golem_memory/skills/ 下）可以刪除
+            // 內建技能（src/skills/modules/ 等）不可刪除
+            const isUserInstalled = pkg.dir && pkg.dir.startsWith(userSkillPackageDir);
+            if (isUserInstalled) {
+                normalized.isDeletable = true;
+                normalized.isOptional = true;
+            }
             skillsMap.set(pkg.id, normalized);
         }
     }

@@ -49,6 +49,7 @@ function inferIntentBoosts(text) {
     add(/(git|commit|branch|diff|pull request|pr|版本|分支)/i, ['git']);
     add(/(記憶|memory|回憶|以前|之前|歷史|找對話|搜尋對話)/i, ['memory', 'session-search']);
     add(/(排程|提醒|schedule|定時|每天|明天|下週|cron)/i, ['chronos', 'schedule', 'list-schedules']);
+    add(/(行程|行事曆|日曆|calendar|今天有什麼|明天有什麼|這週|下週|新增行程|加入行程|排行程|有什麼約|約了什麼|協作日曆)/i, ['collab-calendar']);
     add(/(圖片|影像|畫圖|生成圖|image|prompt)/i, ['image-prompt']);
     add(/(youtube|影片|字幕)/i, ['youtube']);
     add(/(spotify|音樂|播放清單)/i, ['spotify']);
@@ -140,6 +141,23 @@ class ToolRouter {
         this.activeTools = Array.isArray(options.activeTools) ? options.activeTools : null;
         this.activeScene = options.activeScene || toolsetManager.getActiveScene();
         this.policy = options.policy || new ToolUsePolicy();
+        this.toolVectorIndex = options.toolVectorIndex || null; // 由 GolemBrain 注入
+    }
+
+    async routeAsync(query, options = {}) {
+        // 若有向量索引，先做語意搜尋取得 boost 清單
+        let vectorBoostIds = new Set();
+        if (this.toolVectorIndex) {
+            try {
+                const vectorResults = await this.toolVectorIndex.search(query, { limit: 10 });
+                for (const r of vectorResults) {
+                    if (r.score > 0.35) vectorBoostIds.add(r.id); // 相似度門檻
+                }
+            } catch (e) {
+                console.warn(`[ToolRouter] 向量搜尋失敗，退回關鍵字模式: ${e.message}`);
+            }
+        }
+        return this.route(query, { ...options, vectorBoostIds });
     }
 
     route(query, options = {}) {
@@ -147,6 +165,7 @@ class ToolRouter {
         const maxMcpTools = Number(options.maxMcpTools || 6);
         const activeTools = new Set(this.activeTools || toolsetManager.getActiveTools());
         const requestClass = this.policy.classifyRequest(query);
+        const vectorBoostIds = options.vectorBoostIds instanceof Set ? options.vectorBoostIds : new Set();
 
         const skillCandidates = SkillPackageRegistry.listSkillPackages({ userDataDir: this.userDataDir })
             .filter(pkg => pkg.enabled !== false)
@@ -170,6 +189,10 @@ class ToolRouter {
         for (const candidate of skillCandidates) {
             candidate.score = scoreCandidate(query, candidate);
             if (candidate.allowed) candidate.score += 2;
+            // 向量語意 boost：命中向量搜尋結果的技能額外加分
+            if (vectorBoostIds.has(candidate.id) || vectorBoostIds.has(candidate.action)) {
+                candidate.score += 12;
+            }
         }
 
         const skills = this.policy.filter(query, skillCandidates)
@@ -197,6 +220,11 @@ class ToolRouter {
             }
         }
 
+        // 向量語意 boost for MCP tools
+        for (const candidate of mcpTools) {
+            if (vectorBoostIds.has(candidate.id)) candidate.score += 12;
+        }
+
         const filteredMcpTools = this.policy.filter(query, mcpTools)
             .sort((a, b) => b.score - a.score);
 
@@ -218,6 +246,15 @@ class ToolRouter {
 
     buildRoutingHint(query, options = {}) {
         const result = this.route(query, options);
+        return this._formatRoutingHint(result);
+    }
+
+    async buildRoutingHintAsync(query, options = {}) {
+        const result = await this.routeAsync(query, options);
+        return this._formatRoutingHint(result);
+    }
+
+    _formatRoutingHint(result) {
         if (result.skills.length === 0 && result.mcpTools.length === 0 && !result.commandLane.recommended) return '';
 
         const lines = [
