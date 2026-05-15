@@ -43,6 +43,8 @@ type CalendarSettings = {
   };
   apple: {
     enabled: boolean;
+    calendarId?: string;
+    calendarName?: string;
     mode: "daily" | "interval";
     dailyTimes: string[];
     intervalMinutes: number;
@@ -61,6 +63,12 @@ type OAuthStatus = {
   authorized: boolean;
   expiresAt: number | null;
   scope: string | null;
+};
+
+type AppleCalendarOption = {
+  name: string;
+  id: string;
+  writable: boolean;
 };
 
 const DEFAULT_FORM = {
@@ -542,11 +550,15 @@ function SettingsPanel({
   settings,
   oauthStatus,
   isSaving,
+  appleCalendars,
+  isAppleCalendarsLoading,
   importPayload,
   onSettingsChange,
+  onRefreshAppleCalendars,
   onSaveSettings,
   onSyncGoogle,
   onSyncApple,
+  onSyncAll,
   onPushAll,
   onOAuthAuthorize,
   onOAuthRevoke,
@@ -558,11 +570,15 @@ function SettingsPanel({
   settings: CalendarSettings | null;
   oauthStatus: OAuthStatus | null;
   isSaving: boolean;
+  appleCalendars: AppleCalendarOption[];
+  isAppleCalendarsLoading: boolean;
   importPayload: string;
   onSettingsChange: (patch: Partial<CalendarSettings>) => void;
+  onRefreshAppleCalendars: () => void;
   onSaveSettings: () => void;
   onSyncGoogle: () => void;
   onSyncApple: () => void;
+  onSyncAll: () => void;
   onPushAll: () => void;
   onOAuthAuthorize: () => void;
   onOAuthRevoke: () => void;
@@ -571,6 +587,7 @@ function SettingsPanel({
   onExport: (format: "json" | "ics") => void;
   onClose: () => void;
 }) {
+  const hasAnySyncSource = !!(settings?.google?.enabled || settings?.apple?.enabled);
   return (
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
       <div
@@ -583,6 +600,12 @@ function SettingsPanel({
             <X className="w-4 h-4" />
           </button>
         </div>
+
+        {hasAnySyncSource && (
+          <Button onClick={onSyncAll} disabled={isSaving} className="w-full">
+            <RefreshCcw className="w-4 h-4" /> 一鍵全同步（已啟用來源）
+          </Button>
+        )}
 
         {/* Google OAuth */}
         <section className="space-y-3">
@@ -666,6 +689,38 @@ function SettingsPanel({
         {/* Apple */}
         <section className="space-y-2">
           <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">Apple Calendar（macOS）</h3>
+          <div className="flex items-center gap-2">
+            <select
+              className="flex-1 rounded-lg border border-border bg-secondary/40 px-3 py-2 text-sm focus:outline-none focus:border-primary"
+              value={settings?.apple?.calendarId || ""}
+              onChange={(e) => {
+                const selected = appleCalendars.find((c) => c.id === e.target.value);
+                onSettingsChange({
+                  apple: {
+                    ...settings!.apple,
+                    calendarId: e.target.value,
+                    calendarName: selected?.name || settings!.apple.calendarName || "",
+                  },
+                });
+              }}
+            >
+              <option value="">自動選擇（第一個可寫入）</option>
+              {appleCalendars.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name}{c.writable ? "" : "（唯讀）"}
+                </option>
+              ))}
+            </select>
+            <Button variant="outline" size="sm" onClick={onRefreshAppleCalendars} disabled={isSaving || isAppleCalendarsLoading}>
+              <RefreshCcw className={`w-3.5 h-3.5 ${isAppleCalendarsLoading ? "animate-spin" : ""}`} />
+            </Button>
+          </div>
+          <input
+            className="w-full rounded-lg border border-border bg-secondary/40 px-3 py-2 text-sm focus:outline-none focus:border-primary"
+            placeholder="手動輸入目標行事曆名稱（可覆蓋下拉）"
+            value={settings?.apple?.calendarName || ""}
+            onChange={(e) => onSettingsChange({ apple: { ...settings!.apple, calendarName: e.target.value } })}
+          />
           <label className="flex items-center gap-2 text-sm cursor-pointer">
             <input
               type="checkbox"
@@ -752,7 +807,7 @@ function SettingsPanel({
             {settings?.apple?.lastSyncMessage && <p>狀態：{settings.apple.lastSyncMessage}</p>}
           </div>
           <Button variant="secondary" onClick={onSyncApple} disabled={isSaving} className="w-full">
-            <RefreshCcw className="w-4 h-4" /> 立即同步 Apple Calendar
+            <RefreshCcw className="w-4 h-4" /> 立即雙向同步 Apple Calendar
           </Button>
         </section>
 
@@ -794,6 +849,8 @@ export default function CalendarPage() {
   const [oauthStatus, setOauthStatus] = useState<OAuthStatus | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [appleCalendars, setAppleCalendars] = useState<AppleCalendarOption[]>([]);
+  const [isAppleCalendarsLoading, setIsAppleCalendarsLoading] = useState(false);
   const [viewMode, setViewMode] = useState<ViewMode>("month");
   const [currentDate, setCurrentDate] = useState(() => {
     const d = new Date();
@@ -837,7 +894,20 @@ export default function CalendarPage() {
     }
   }, [toast]);
 
+  const loadAppleCalendars = useCallback(async () => {
+    try {
+      setIsAppleCalendarsLoading(true);
+      const data = await apiGet<{ calendars?: AppleCalendarOption[] }>("/api/calendar/apple/calendars");
+      setAppleCalendars(Array.isArray(data.calendars) ? data.calendars : []);
+    } catch {
+      setAppleCalendars([]);
+    } finally {
+      setIsAppleCalendarsLoading(false);
+    }
+  }, []);
+
   useEffect(() => { load(); }, [load]);
+  useEffect(() => { loadAppleCalendars(); }, [loadAppleCalendars]);
 
   // Navigation
   const navigate = useCallback((dir: -1 | 1) => {
@@ -1011,16 +1081,54 @@ export default function CalendarPage() {
 
   const syncApple = useCallback(async () => {
     try {
+      if (!settings?.apple?.enabled) {
+        toast.error("Apple 同步未啟用", "請先勾選「啟用 Apple 自動同步」再執行雙向同步。");
+        return;
+      }
       setIsSaving(true);
-      await apiPostWrite("/api/calendar/apple/sync", {
-        daysBefore: settings?.apple?.daysBefore ?? 30,
-        daysAfter: settings?.apple?.daysAfter ?? 180,
-        timeoutMs: (settings?.apple?.timeoutSec ?? 60) * 1000,
-      });
+      const result = await apiPostWrite<{
+        apple?: { pulled?: boolean; pushed?: number; failed?: number; errors?: string[]; skippedReason?: string };
+      }>("/api/calendar/sync", {});
       await load();
-      toast.success("Apple 行事曆同步完成");
+      if (result.apple?.skippedReason) {
+        toast.error("Apple 同步被略過", result.apple.skippedReason);
+        return;
+      }
+      const pushed = result.apple?.pushed ?? 0;
+      const failed = result.apple?.failed ?? 0;
+      const firstError = result.apple?.errors?.[0];
+      toast.success(
+        "Apple 雙向同步完成",
+        `拉取:${result.apple?.pulled ? "是" : "否"} 推送成功:${pushed} 失敗:${failed}${firstError ? `；錯誤:${firstError}` : ""}`
+      );
     } catch (error) {
       toast.error("Apple 同步失敗", error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsSaving(false);
+    }
+  }, [load, settings, toast]);
+
+  const syncAll = useCallback(async () => {
+    try {
+      if (!settings?.google?.enabled && !settings?.apple?.enabled) {
+        toast.error("無可同步來源", "請先啟用 Google 或 Apple 同步。");
+        return;
+      }
+      setIsSaving(true);
+      const result = await apiPostWrite<{
+        google?: { pulled?: boolean; pushed?: number; failed?: number; skippedReason?: string };
+        apple?: { pulled?: boolean; pushed?: number; failed?: number; skippedReason?: string };
+      }>("/api/calendar/sync", {});
+      await load();
+      const googleText = settings?.google?.enabled
+        ? `Google 拉取:${result.google?.pulled ? "是" : "否"} 推送:${result.google?.pushed ?? 0}/${(result.google?.pushed ?? 0) + (result.google?.failed ?? 0)}`
+        : `Google 未啟用${result.google?.skippedReason ? "（已略過）" : ""}`;
+      const appleText = settings?.apple?.enabled
+        ? `Apple 拉取:${result.apple?.pulled ? "是" : "否"} 推送:${result.apple?.pushed ?? 0}/${(result.apple?.pushed ?? 0) + (result.apple?.failed ?? 0)}`
+        : `Apple 未啟用${result.apple?.skippedReason ? "（已略過）" : ""}`;
+      toast.success("全平台同步完成", `${googleText}；${appleText}`);
+    } catch (error) {
+      toast.error("全平台同步失敗", error instanceof Error ? error.message : String(error));
     } finally {
       setIsSaving(false);
     }
@@ -1159,11 +1267,15 @@ export default function CalendarPage() {
           settings={settings}
           oauthStatus={oauthStatus}
           isSaving={isSaving}
+          appleCalendars={appleCalendars}
+          isAppleCalendarsLoading={isAppleCalendarsLoading}
           importPayload={importPayload}
           onSettingsChange={(patch) => setSettings((prev) => prev ? { ...prev, ...patch } : prev)}
+          onRefreshAppleCalendars={loadAppleCalendars}
           onSaveSettings={saveSettings}
           onSyncGoogle={syncGoogle}
           onSyncApple={syncApple}
+          onSyncAll={syncAll}
           onPushAll={pushAllToGoogle}
           onOAuthAuthorize={handleOAuthAuthorize}
           onOAuthRevoke={handleOAuthRevoke}

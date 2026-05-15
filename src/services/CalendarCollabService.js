@@ -6,8 +6,12 @@ const { execFile } = require('child_process');
 const DATA_DIR = path.resolve(process.cwd(), 'data', 'dashboard');
 const DATA_PATH = path.join(DATA_DIR, 'collab-calendar.json');
 const DEFAULT_APPLE_SYNC_TIMEOUT_MS = 60000;
+const IDLE_AUTO_SYNC_MS = 3 * 60 * 60 * 1000;
+const IDLE_CHECK_INTERVAL_MS = 5 * 60 * 1000;
 let appleAutoSyncTimer = null;
 let appleSyncInFlight = null;
+let idleAutoSyncTimer = null;
+let bidirectionalSyncInFlight = null;
 
 const DEFAULT_STATE = {
   version: 1,
@@ -25,6 +29,8 @@ const DEFAULT_STATE = {
     },
     apple: {
       enabled: false,
+      calendarId: '',
+      calendarName: '',
       mode: 'daily',
       dailyTimes: ['09:00'],
       intervalMinutes: 120,
@@ -35,6 +41,14 @@ const DEFAULT_STATE = {
       lastSyncAt: null,
       lastSyncStatus: null,
       lastSyncMessage: '',
+    },
+    syncControl: {
+      autoSyncOnChange: true,
+      idleAutoSyncEnabled: true,
+      idleHours: 3,
+      lastLocalMutationAt: null,
+      lastIdleAutoSyncAt: null,
+      lastBidirectionalSyncAt: null,
     },
   },
   events: [],
@@ -105,6 +119,8 @@ function ensureStateShape(raw) {
       },
       apple: {
         enabled: toBool(state.settings?.apple?.enabled),
+        calendarId: safeString(state.settings?.apple?.calendarId),
+        calendarName: safeString(state.settings?.apple?.calendarName),
         mode: safeString(state.settings?.apple?.mode, 'daily') === 'interval' ? 'interval' : 'daily',
         dailyTimes: normalizeDailyTimes(state.settings?.apple?.dailyTimes).length
           ? normalizeDailyTimes(state.settings?.apple?.dailyTimes)
@@ -117,6 +133,14 @@ function ensureStateShape(raw) {
         lastSyncAt: state.settings?.apple?.lastSyncAt || null,
         lastSyncStatus: state.settings?.apple?.lastSyncStatus || null,
         lastSyncMessage: safeString(state.settings?.apple?.lastSyncMessage),
+      },
+      syncControl: {
+        autoSyncOnChange: state.settings?.syncControl?.autoSyncOnChange !== false,
+        idleAutoSyncEnabled: state.settings?.syncControl?.idleAutoSyncEnabled !== false,
+        idleHours: Math.max(1, Math.min(24, toInt(state.settings?.syncControl?.idleHours, 3))),
+        lastLocalMutationAt: state.settings?.syncControl?.lastLocalMutationAt || null,
+        lastIdleAutoSyncAt: state.settings?.syncControl?.lastIdleAutoSyncAt || null,
+        lastBidirectionalSyncAt: state.settings?.syncControl?.lastBidirectionalSyncAt || null,
       },
     },
     events: Array.isArray(state.events) ? state.events : [],
@@ -252,6 +276,7 @@ function createEvent(payload) {
   const state = loadState();
   const event = normalizeEvent(payload);
   state.events.push(event);
+  state.settings.syncControl.lastLocalMutationAt = new Date().toISOString();
   const saved = saveState(state);
   return { event, updatedAt: saved.updatedAt };
 }
@@ -263,6 +288,7 @@ function updateEvent(id, payload) {
   const current = state.events[index];
   const event = normalizeEvent({ ...current, ...payload, id: current.id }, current);
   state.events[index] = event;
+  state.settings.syncControl.lastLocalMutationAt = new Date().toISOString();
   const saved = saveState(state);
   return { event, updatedAt: saved.updatedAt };
 }
@@ -272,6 +298,7 @@ function removeEvent(id) {
   const initialLength = state.events.length;
   state.events = state.events.filter((event) => event.id !== id);
   if (state.events.length === initialLength) return false;
+  state.settings.syncControl.lastLocalMutationAt = new Date().toISOString();
   saveState(state);
   return true;
 }
@@ -302,6 +329,12 @@ function updateSettings(patch) {
     state.settings.apple = {
       ...current,
       enabled: patch.apple.enabled !== undefined ? toBool(patch.apple.enabled) : toBool(current.enabled),
+      calendarId: patch.apple.calendarId !== undefined
+        ? safeString(patch.apple.calendarId)
+        : safeString(current.calendarId),
+      calendarName: patch.apple.calendarName !== undefined
+        ? safeString(patch.apple.calendarName)
+        : safeString(current.calendarName),
       mode: nextMode,
       dailyTimes: nextTimes.length ? nextTimes : ['09:00'],
       intervalMinutes: patch.apple.intervalMinutes !== undefined
@@ -322,8 +355,27 @@ function updateSettings(patch) {
       lastSyncMessage: safeString(current.lastSyncMessage),
     };
   }
+  if (patch?.syncControl && typeof patch.syncControl === 'object') {
+    const current = state.settings.syncControl || {};
+    state.settings.syncControl = {
+      ...current,
+      autoSyncOnChange: patch.syncControl.autoSyncOnChange !== undefined
+        ? toBool(patch.syncControl.autoSyncOnChange)
+        : current.autoSyncOnChange !== false,
+      idleAutoSyncEnabled: patch.syncControl.idleAutoSyncEnabled !== undefined
+        ? toBool(patch.syncControl.idleAutoSyncEnabled)
+        : current.idleAutoSyncEnabled !== false,
+      idleHours: patch.syncControl.idleHours !== undefined
+        ? Math.max(1, Math.min(24, toInt(patch.syncControl.idleHours, 3)))
+        : Math.max(1, Math.min(24, toInt(current.idleHours, 3))),
+      lastLocalMutationAt: current.lastLocalMutationAt || null,
+      lastIdleAutoSyncAt: current.lastIdleAutoSyncAt || null,
+      lastBidirectionalSyncAt: current.lastBidirectionalSyncAt || null,
+    };
+  }
   const saved = saveState(state);
   refreshAppleAutoSync();
+  refreshIdleAutoSync();
   return { settings: saved.settings, updatedAt: saved.updatedAt };
 }
 
@@ -646,6 +698,19 @@ async function syncFromGoogle() {
   };
 }
 
+function makeAppleEpochScriptDate(dateIso) {
+  const date = new Date(dateIso);
+  if (Number.isNaN(date.getTime())) throw new Error(`Invalid Apple date: ${dateIso}`);
+  return {
+    year: date.getFullYear(),
+    month: date.getMonth() + 1,
+    day: date.getDate(),
+    hour: date.getHours(),
+    minute: date.getMinutes(),
+    second: date.getSeconds(),
+  };
+}
+
 async function pushEventToGoogle(event) {
   const accessToken = await getValidAccessToken();
   const state = loadState();
@@ -707,6 +772,126 @@ async function deleteEventFromGoogle(sourceId) {
   return true;
 }
 
+async function pushEventToApple(event) {
+  const state = loadState();
+  if (!state.settings?.apple?.enabled) throw new Error('Apple sync is disabled.');
+  const preferredCalendarId = safeString(state.settings?.apple?.calendarId);
+  const preferredCalendarName = safeString(state.settings?.apple?.calendarName);
+  const preferredCalendarIdText = JSON.stringify(preferredCalendarId);
+  const preferredCalendarNameText = JSON.stringify(preferredCalendarName);
+  const title = JSON.stringify(String(event.title || ''));
+  const location = JSON.stringify(String(event.location || ''));
+  const notes = JSON.stringify(String(event.description || ''));
+  const startParts = makeAppleEpochScriptDate(event.start);
+  const endParts = makeAppleEpochScriptDate(event.end);
+  const script = `tell application "Calendar"
+set preferredCalendarName to ${preferredCalendarNameText}
+set preferredCalendarId to ${preferredCalendarIdText}
+set targetCal to missing value
+if preferredCalendarId is not "" then
+repeat with c in calendars
+if ((id of c as text) is preferredCalendarId) and ((writable of c) is true) then
+set targetCal to c
+exit repeat
+end if
+end repeat
+end if
+if preferredCalendarName is not "" then
+repeat with c in calendars
+if ((name of c as text) is preferredCalendarName) and ((writable of c) is true) then
+set targetCal to c
+exit repeat
+end if
+end repeat
+end if
+if targetCal is missing value then
+set writableCalendars to (every calendar whose writable is true)
+if (count of writableCalendars) is 0 then error "No writable Apple Calendar found."
+set targetCal to first item of writableCalendars
+end if
+set evtTitle to ${title}
+set evtLoc to ${location}
+set evtNote to ${notes}
+set evtStart to current date
+set year of evtStart to ${startParts.year}
+set month of evtStart to ${startParts.month}
+set day of evtStart to ${startParts.day}
+set time of evtStart to (${startParts.hour} * hours + ${startParts.minute} * minutes + ${startParts.second})
+set evtEnd to current date
+set year of evtEnd to ${endParts.year}
+set month of evtEnd to ${endParts.month}
+set day of evtEnd to ${endParts.day}
+set time of evtEnd to (${endParts.hour} * hours + ${endParts.minute} * minutes + ${endParts.second})
+set matchedEvent to missing value
+repeat with anEvent in (every event of targetCal)
+if ((summary of anEvent as text) is evtTitle) and ((start date of anEvent) is evtStart) then
+set matchedEvent to anEvent
+exit repeat
+end if
+end repeat
+if matchedEvent is missing value then
+set matchedEvent to make new event at end of events of targetCal with properties {summary:evtTitle, start date:evtStart, end date:evtEnd}
+end if
+set location of matchedEvent to evtLoc
+set description of matchedEvent to evtNote
+return (id of matchedEvent as text)
+end tell`;
+  const appleId = await execAppleScript(script, { timeoutMs: Math.max(10000, Math.min(300000, (state.settings?.apple?.timeoutSec || 60) * 1000)) });
+  return { id: String(appleId || '') };
+}
+
+async function deleteEventFromApple(event) {
+  const state = loadState();
+  if (!state.settings?.apple?.enabled) return true;
+  const preferredCalendarId = safeString(state.settings?.apple?.calendarId);
+  const preferredCalendarName = safeString(state.settings?.apple?.calendarName);
+  const preferredCalendarIdText = JSON.stringify(preferredCalendarId);
+  const preferredCalendarNameText = JSON.stringify(preferredCalendarName);
+  const title = JSON.stringify(String(event.title || ''));
+  const startParts = makeAppleEpochScriptDate(event.start);
+  const script = `tell application "Calendar"
+set preferredCalendarName to ${preferredCalendarNameText}
+set preferredCalendarId to ${preferredCalendarIdText}
+set targetCal to missing value
+if preferredCalendarId is not "" then
+repeat with c in calendars
+if ((id of c as text) is preferredCalendarId) and ((writable of c) is true) then
+set targetCal to c
+exit repeat
+end if
+end repeat
+end if
+if preferredCalendarName is not "" then
+repeat with c in calendars
+if ((name of c as text) is preferredCalendarName) and ((writable of c) is true) then
+set targetCal to c
+exit repeat
+end if
+end repeat
+end if
+if targetCal is missing value then
+set writableCalendars to (every calendar whose writable is true)
+if (count of writableCalendars) is 0 then return "ok"
+set targetCal to first item of writableCalendars
+end if
+set evtTitle to ${title}
+set evtStart to current date
+set year of evtStart to ${startParts.year}
+set month of evtStart to ${startParts.month}
+set day of evtStart to ${startParts.day}
+set time of evtStart to (${startParts.hour} * hours + ${startParts.minute} * minutes + ${startParts.second})
+repeat with anEvent in (every event of targetCal)
+if ((summary of anEvent as text) is evtTitle) and ((start date of anEvent) is evtStart) then
+delete anEvent
+exit repeat
+end if
+end repeat
+return "ok"
+end tell`;
+  await execAppleScript(script, { timeoutMs: Math.max(10000, Math.min(300000, (state.settings?.apple?.timeoutSec || 60) * 1000)) });
+  return true;
+}
+
 function execAppleScript(script, { timeoutMs = DEFAULT_APPLE_SYNC_TIMEOUT_MS } = {}) {
   return new Promise((resolve, reject) => {
     const child = execFile('osascript', ['-e', script], { maxBuffer: 1024 * 1024 * 2 }, (error, stdout, stderr) => {
@@ -719,6 +904,34 @@ function execAppleScript(script, { timeoutMs = DEFAULT_APPLE_SYNC_TIMEOUT_MS } =
     }, timeoutMs);
     child.on('exit', () => clearTimeout(timer));
   });
+}
+
+async function listAppleCalendars() {
+  const script = `tell application "Calendar"
+set output to ""
+repeat with c in calendars
+set calName to (name of c as text)
+set calId to (id of c as text)
+set writableFlag to (writable of c as boolean)
+set output to output & calName & "\\t" & calId & "\\t" & writableFlag & "\\n"
+end repeat
+return output
+end tell`;
+  const raw = await execAppleScript(script, { timeoutMs: 15000 });
+  const calendars = raw
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const [name, id, writableRaw] = line.split('\t');
+      return {
+        name: String(name || '').trim(),
+        id: String(id || '').trim(),
+        writable: String(writableRaw || '').toLowerCase() === 'true',
+      };
+    })
+    .filter((item) => item.name && item.id);
+  return { calendars };
 }
 
 function computeNextAppleSyncAt(apple, now = new Date()) {
@@ -763,6 +976,105 @@ function scheduleAppleAutoSync() {
 
 function refreshAppleAutoSync() {
   scheduleAppleAutoSync();
+}
+
+function shouldIdleAutoSync(state) {
+  const syncControl = state.settings?.syncControl || {};
+  if (syncControl.idleAutoSyncEnabled === false) return false;
+  const lastMutation = syncControl.lastLocalMutationAt ? new Date(syncControl.lastLocalMutationAt).getTime() : null;
+  if (!lastMutation || Number.isNaN(lastMutation)) return false;
+  if (Date.now() - lastMutation < IDLE_AUTO_SYNC_MS) return false;
+  const lastIdleSync = syncControl.lastIdleAutoSyncAt ? new Date(syncControl.lastIdleAutoSyncAt).getTime() : null;
+  if (lastIdleSync && !Number.isNaN(lastIdleSync) && lastIdleSync >= lastMutation) return false;
+  return true;
+}
+
+async function syncBidirectional({ trigger = 'manual' } = {}) {
+  if (bidirectionalSyncInFlight) return bidirectionalSyncInFlight;
+  bidirectionalSyncInFlight = (async () => {
+    const summary = {
+      trigger,
+      google: { pulled: false, pushed: 0, failed: 0, errors: [] },
+      apple: { pulled: false, pushed: 0, failed: 0, errors: [], skippedReason: '' },
+    };
+    const state = loadState();
+    const events = state.events || [];
+    const oauthStatus = getOAuthStatus();
+
+    if (state.settings?.google?.enabled) {
+      try {
+        await syncFromGoogle();
+        summary.google.pulled = true;
+      } catch {
+        // keep going
+      }
+      if (oauthStatus.authorized) {
+        for (const event of events) {
+          try {
+            await pushEventToGoogle(event);
+            summary.google.pushed += 1;
+          } catch (error) {
+            summary.google.failed += 1;
+            if (summary.google.errors.length < 10) {
+              summary.google.errors.push(`${event.id}: ${error instanceof Error ? error.message : String(error)}`);
+            }
+          }
+        }
+      }
+    }
+
+    if (state.settings?.apple?.enabled) {
+      try {
+        await syncFromApple({ trigger });
+        summary.apple.pulled = true;
+      } catch {
+        // keep going
+      }
+      for (const event of events) {
+        try {
+          await pushEventToApple(event);
+          summary.apple.pushed += 1;
+        } catch (error) {
+          summary.apple.failed += 1;
+          if (summary.apple.errors.length < 10) {
+            summary.apple.errors.push(`${event.id}: ${error instanceof Error ? error.message : String(error)}`);
+          }
+        }
+      }
+    } else {
+      summary.apple.skippedReason = 'Apple sync is disabled in settings.';
+    }
+
+    const done = loadState();
+    done.settings.syncControl.lastBidirectionalSyncAt = new Date().toISOString();
+    if (trigger === 'idle-auto') done.settings.syncControl.lastIdleAutoSyncAt = done.settings.syncControl.lastBidirectionalSyncAt;
+    saveState(done);
+    return summary;
+  })();
+  try {
+    return await bidirectionalSyncInFlight;
+  } finally {
+    bidirectionalSyncInFlight = null;
+  }
+}
+
+function triggerAutoSyncOnLocalChange() {
+  const state = loadState();
+  if (state.settings?.syncControl?.autoSyncOnChange === false) return;
+  syncBidirectional({ trigger: 'local-change' }).catch(() => {});
+}
+
+function scheduleIdleAutoSync() {
+  if (idleAutoSyncTimer) clearInterval(idleAutoSyncTimer);
+  idleAutoSyncTimer = setInterval(() => {
+    const state = loadState();
+    if (!shouldIdleAutoSync(state)) return;
+    syncBidirectional({ trigger: 'idle-auto' }).catch(() => {});
+  }, IDLE_CHECK_INTERVAL_MS);
+}
+
+function refreshIdleAutoSync() {
+  scheduleIdleAutoSync();
 }
 
 async function syncFromApple({
@@ -857,6 +1169,7 @@ end tell`;
 }
 
 refreshAppleAutoSync();
+refreshIdleAutoSync();
 
 module.exports = {
   listEvents,
@@ -871,7 +1184,9 @@ module.exports = {
   importFromIcs,
   syncFromGoogle,
   syncFromApple,
+  syncBidirectional,
   refreshAppleAutoSync,
+  refreshIdleAutoSync,
   checkDueReminders,
   // Google OAuth2
   buildAuthUrl,
@@ -880,4 +1195,8 @@ module.exports = {
   clearOAuthToken,
   pushEventToGoogle,
   deleteEventFromGoogle,
+  pushEventToApple,
+  deleteEventFromApple,
+  listAppleCalendars,
+  triggerAutoSyncOnLocalChange,
 };

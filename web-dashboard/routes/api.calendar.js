@@ -24,7 +24,9 @@ module.exports = function registerCalendarRoutes(server) {
 
   router.post('/api/calendar/events', requireCalendarWrite, (req, res) => {
     try {
-      return res.json({ success: true, ...CalendarCollabService.createEvent(req.body || {}) });
+      const result = CalendarCollabService.createEvent(req.body || {});
+      CalendarCollabService.triggerAutoSyncOnLocalChange();
+      return res.json({ success: true, ...result });
     } catch (error) {
       return handleError(res, error);
     }
@@ -34,6 +36,7 @@ module.exports = function registerCalendarRoutes(server) {
     try {
       const result = CalendarCollabService.updateEvent(req.params.id, req.body || {});
       if (!result) return res.status(404).json({ error: 'Event not found.' });
+      CalendarCollabService.triggerAutoSyncOnLocalChange();
       return res.json({ success: true, ...result });
     } catch (error) {
       return handleError(res, error);
@@ -51,8 +54,12 @@ module.exports = function registerCalendarRoutes(server) {
           await CalendarCollabService.deleteEventFromGoogle(event.sourceId).catch(() => {});
         }
       }
+      if (event && event.source === 'apple-calendar') {
+        await CalendarCollabService.deleteEventFromApple(event).catch(() => {});
+      }
       const removed = CalendarCollabService.removeEvent(req.params.id);
       if (!removed) return res.status(404).json({ error: 'Event not found.' });
+      CalendarCollabService.triggerAutoSyncOnLocalChange();
       return res.json({ success: true });
     } catch (error) {
       return handleError(res, error);
@@ -220,6 +227,25 @@ module.exports = function registerCalendarRoutes(server) {
     try {
       const { daysBefore = 30, daysAfter = 180, timeoutMs } = req.body || {};
       const result = await CalendarCollabService.syncFromApple({ daysBefore, daysAfter, timeoutMs, trigger: 'manual' });
+      return res.json({ success: true, ...result });
+    } catch (error) {
+      return handleError(res, error);
+    }
+  });
+
+  router.get('/api/calendar/apple/calendars', requireCalendarWrite, async (req, res) => {
+    try {
+      const result = await CalendarCollabService.listAppleCalendars();
+      return res.json({ success: true, ...result });
+    } catch (error) {
+      return handleError(res, error);
+    }
+  });
+
+  // ── Unified Bidirectional Sync (Manual) ──────────────────────
+  router.post('/api/calendar/sync', requireCalendarWrite, async (req, res) => {
+    try {
+      const result = await CalendarCollabService.syncBidirectional({ trigger: 'manual' });
       return res.json({ success: true, ...result });
     } catch (error) {
       return handleError(res, error);

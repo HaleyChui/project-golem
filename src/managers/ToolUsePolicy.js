@@ -5,7 +5,7 @@ function normalize(value) {
 const EXPLICIT_ACTION_RE = /(幫我|直接|執行|打開|開啟|點擊|輸入|填|建立|新增|儲存|更新|刪除|送出|發送|排程|提醒|查|讀|搜尋|分析|檢查|debug|修|run|execute|open|click|fill|create|save|update|delete|send|schedule|search|inspect|analy[sz]e|check)/i;
 const PASSIVE_RE = /(怎麼|如何|為什麼|解釋|說明|建議|想法|概念|原理|比較|教我|what is|why|explain|suggest|recommend|compare|idea)/i;
 const OPERATIONAL_RE = /(幫我|直接|執行|打開|開啟|點擊|輸入|建立|新增|儲存|更新|刪除|送出|發送|排程|提醒|查|讀|搜尋|分析|檢查|debug|修|run|execute|open|click|fill|create|save|update|delete|send|schedule|search|inspect|check)/i;
-const TOOL_CAPABILITY_RE = /(你有|有沒有|是否有|可用嗎|能用嗎|支援|available|have|has|enabled|啟用).*(mcp|工具|tool|server|searxng|chrome-devtools|devtools)/i;
+const TOOL_CAPABILITY_RE = /(你有|有沒有|是否有|可用嗎|能用嗎|支援|available|have|has|enabled|啟用).*(mcp|工具|tool|server|chrome-devtools|devtools)/i;
 
 const HIGH_RISK_RE = /(\bdelete\b|\bremove\b|刪除|\bdestroy\b|\bdrop\b|\breset\b|\brm\b|\bkill\b|\bformat\b|付款|\bpay\b|\bpurchase\b|\bbuy\b|\bsend_email\b|\bsend\b|發送|寄出|\bpost\b|\bpublish\b|公開|\bdeploy\b|\bpush\b|\bmerge\b)/i;
 const ACTION_RE = /(click|fill|type|submit|navigate|new_page|close_page|drag|emulate|handle_dialog|create|save|update|write|schedule|commit|push|merge|reincarnate|evolution|moltbot|wiki\/delete|delete|刪除|建立|新增|儲存|更新|點擊|輸入|送出|排程)/i;

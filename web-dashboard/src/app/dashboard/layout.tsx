@@ -191,7 +191,7 @@ function DashboardSidebar({
                             Project Golem
                         </h1>
                         <div className="mt-1 flex items-center gap-2">
-                            <span className="enterprise-badge">v{version}</span>
+                            <span className="enterprise-badge">{version}</span>
                             <p className="text-[11px] text-muted-foreground whitespace-nowrap">
                                 {t("sidebar.botControlCenter")}
                             </p>
