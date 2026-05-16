@@ -1192,14 +1192,23 @@ class GolemBrain {
         }
         try {
             const ToolVectorIndex = require('../managers/ToolVectorIndex');
+            const ExampleSyncManager = require('../managers/ExampleSyncManager');
             if (!this.toolVectorIndex) {
                 this.toolVectorIndex = new ToolVectorIndex(this.userDataDir, this.memoryDriver.embedder);
             }
 
             const SkillPackageRegistry = require('../managers/SkillPackageRegistry');
             const MCPToolCatalog = require('../mcp/MCPToolCatalog');
+            const ExampleRegistry = require('../managers/ExampleRegistry');
             const fs = require('fs');
             const MCP_CONFIG_PATH = require('path').resolve(process.cwd(), 'data', 'mcp-servers.json');
+
+            // 先同步一輪 capability/example，確保錯誤修正範例可被立即索引與召回
+            try {
+                ExampleSyncManager.sync(this.userDataDir);
+            } catch (e) {
+                console.warn(`[ToolVectorIndex] example sync failed before indexing: ${e.message}`);
+            }
 
             // 收集所有技能
             const skillItems = SkillPackageRegistry.listSkillPackages({ userDataDir: this.userDataDir })
@@ -1234,7 +1243,19 @@ class GolemBrain {
                 }
             } catch (_) {}
 
-            const allItems = [...skillItems, ...mcpItems];
+            // 收集可檢索範例（讓失敗時能向量召回更準確的指令格式）
+            const exampleItems = ExampleRegistry.listAll()
+                .filter(item => item && item.id && item.example)
+                .map(item => ({
+                    id: item.id,
+                    kind: 'example',
+                    name: item.target || item.id,
+                    description: `${item.lane} example | ${item.anti_pattern || ''}`.trim(),
+                    triggers: [...(item.intent_tags || []), ...(item.error_tags || [])],
+                    serverName: '',
+                }));
+
+            const allItems = [...skillItems, ...mcpItems, ...exampleItems];
             const currentIds = allItems.map(i => i.id);
 
             await this.toolVectorIndex.upsertMany(allItems);
@@ -1246,7 +1267,7 @@ class GolemBrain {
                 toolVectorIndex: this.toolVectorIndex,
             });
 
-            console.log(`✅ [ToolVectorIndex] 向量索引同步完成 (skills=${skillItems.length}, mcp=${mcpItems.length})`);
+            console.log(`✅ [ToolVectorIndex] 向量索引同步完成 (skills=${skillItems.length}, mcp=${mcpItems.length}, examples=${exampleItems.length})`);
         } catch (e) {
             const hint = (e && (e.code === 'EACCES' || /permission denied/i.test(String(e.message || ''))))
                 ? ' | Hint: 檢查 golem_memory 權限，需可寫入 tool-vector-index 目錄'

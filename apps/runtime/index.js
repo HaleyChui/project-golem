@@ -1044,6 +1044,120 @@ async function handleUnifiedCallback(ctx, actionData) {
             return;
         }
 
+        if (task.type === 'CORRECTION_APPROVAL') {
+            pendingTasks.delete(taskId);
+            const approvedRetry = action === 'RETRYFIX';
+
+            if (!approvedRetry) {
+                const stopPrompt = `[System Observation]\n` +
+                    `使用者已明確拒絕再次矯正執行。\n` +
+                    `本輪 action 到此停止，請僅用 [GOLEM_REPLY] 向使用者確認已停止，不要再輸出 [GOLEM_ACTION]。`;
+                if (convoManager) {
+                    await convoManager.enqueue(task.ctx || ctx, stopPrompt, {
+                        isPriority: true,
+                        bypassDebounce: true,
+                        isSystemFeedback: true,
+                        allowActions: false,
+                    });
+                }
+                await ctx.reply('🛑 已停止本輪 action，不再要求 Golem 繼續矯正。');
+                return;
+            }
+
+            await ctx.reply('✅ 已批准再次矯正，我現在要求 Golem 重寫修正指令並重試。');
+            if (convoManager) {
+                await convoManager.enqueue(task.ctx || ctx, task.feedbackPrompt, {
+                    isPriority: true,
+                    bypassDebounce: true,
+                    isSystemFeedback: true,
+                    allowActions: true,
+                    correctionAttempt: Number(task.nextCorrectionAttempt || 1),
+                    actionDepth: Number(task.actionDepth || 1),
+                    maxActionDepth: Number(task.maxActionDepth || process.env.GOLEM_MAX_AUTO_TURNS || 5),
+                });
+            } else if (brain && typeof brain.sendMessage === 'function') {
+                const finalResponse = await brain.sendMessage(task.feedbackPrompt, false, {
+                    isSystemFeedback: true,
+                    allowActions: true,
+                    correctionAttempt: Number(task.nextCorrectionAttempt || 1),
+                    actionDepth: Number(task.actionDepth || 1),
+                    maxActionDepth: Number(task.maxActionDepth || process.env.GOLEM_MAX_AUTO_TURNS || 5),
+                });
+                await NeuroShunter.dispatch(task.ctx || ctx, finalResponse, brain, controller, {
+                    isSystemFeedback: true,
+                    allowActions: true,
+                    correctionAttempt: Number(task.nextCorrectionAttempt || 1),
+                    actionDepth: Number(task.actionDepth || 1),
+                    maxActionDepth: Number(task.maxActionDepth || process.env.GOLEM_MAX_AUTO_TURNS || 5),
+                });
+            }
+            return;
+        }
+
+        if (task.type === 'OBSERVATION_ACTION_APPROVAL') {
+            pendingTasks.delete(taskId);
+            const approvedRetry = action === 'RETRYOBS';
+
+            if (!approvedRetry) {
+                const stopPrompt = `[System Observation]\n` +
+                    `使用者已拒絕再次執行 observation 階段的候選 action。\n` +
+                    `本輪 action 到此停止，請僅用 [GOLEM_REPLY] 向使用者確認已停止，不要再輸出 [GOLEM_ACTION]。`;
+                if (convoManager) {
+                    await convoManager.enqueue(task.ctx || ctx, stopPrompt, {
+                        isPriority: true,
+                        bypassDebounce: true,
+                        isSystemFeedback: true,
+                        allowActions: false,
+                    });
+                }
+                await ctx.reply('🛑 已停止本輪 action，不再執行該份矯正指令。');
+                return;
+            }
+
+            const actionPayload = Array.isArray(task.proposedActions)
+                ? task.proposedActions
+                : [];
+            const correctionExamples = [
+                '{"action":"collab-calendar","args":{"action":"add","title":"倒垃圾 (8點前需完成)","start":"2026-05-17T07:30:00+08:00","end":"2026-05-17T08:00:00+08:00","description":"明早八點前完成","reminderMinutes":10}}',
+                '{"action":"mcp_call","server":"chrome-devtools","tool":"navigate_page","parameters":{"url":"https://example.com","timeout":60000}}',
+                '{"action":"command","parameter":"ls -la"}'
+            ].join('\n');
+            const retryPrompt = `[System Observation]\n` +
+                `使用者已批准再次嘗試。請你先重寫一個正確的 [GOLEM_ACTION]，再執行。\n` +
+                `\n[PREVIOUS_INVALID_ACTIONS]\n` +
+                `${JSON.stringify(actionPayload, null, 2)}\n` +
+                `\n要求：\n` +
+                `- 不要沿用錯誤欄位（例如 parameters.command=insert）。\n` +
+                `- 只輸出一個最小必要 action。\n` +
+                `- 請參考以下正確範例：\n${correctionExamples}\n`;
+            await ctx.reply('✅ 已批准，我現在要求 Golem 依範例重寫正確指令後再執行。');
+
+            if (convoManager) {
+                await convoManager.enqueue(task.ctx || ctx, retryPrompt, {
+                    isPriority: true,
+                    bypassDebounce: true,
+                    isSystemFeedback: true,
+                    allowActions: true,
+                    actionDepth: Number(task.actionDepth || 0) + 1,
+                    maxActionDepth: Number(task.maxActionDepth || process.env.GOLEM_MAX_AUTO_TURNS || 5),
+                });
+            } else if (brain && typeof brain.sendMessage === 'function') {
+                const finalResponse = await brain.sendMessage(retryPrompt, false, {
+                    isSystemFeedback: true,
+                    allowActions: true,
+                    actionDepth: Number(task.actionDepth || 0) + 1,
+                    maxActionDepth: Number(task.maxActionDepth || process.env.GOLEM_MAX_AUTO_TURNS || 5),
+                });
+                await NeuroShunter.dispatch(task.ctx || ctx, finalResponse, brain, controller, {
+                    isSystemFeedback: true,
+                    allowActions: true,
+                    actionDepth: Number(task.actionDepth || 0) + 1,
+                    maxActionDepth: Number(task.maxActionDepth || process.env.GOLEM_MAX_AUTO_TURNS || 5),
+                });
+            }
+            return;
+        }
+
         if (action === 'DENY') {
             pendingTasks.delete(taskId);
             await ctx.reply('🛡️ 操作駁回');
@@ -1157,14 +1271,80 @@ async function handleUnifiedCallback(ctx, actionData) {
                 if (observation) {
                     await ctx.reply(`📤 指令執行完畢 (共抓取 ${finalOutput.length} 字元)！將結果放入對話隊列 (Dialogue Queue) 等待大腦分析...`);
 
-                    const feedbackPrompt = `[System Observation]\nUser approved actions.\nExecution Result:\n${observation}\n\nPlease analyze this result and report to the user using [GOLEM_REPLY].`;
+                    const failedBlocks = observation
+                        .split('\n\n----------------\n\n')
+                        .filter((block) => block.includes('[Step') && block.includes(' Failed]'));
+                    const currentCorrectionAttempt = Number(task.correctionAttempt || 0);
+                    const maxAutoCorrectionAttempts = Number(process.env.GOLEM_MAX_AUTO_CORRECTION_ATTEMPTS || 1);
+                    const shouldAutoCorrect = failedBlocks.length > 0 && currentCorrectionAttempt < maxAutoCorrectionAttempts;
+                    const needsUserRetryApproval = failedBlocks.length > 0 && !shouldAutoCorrect;
+                    const correctionExamples = [
+                        '{"action":"command","parameter":"ls -la"}',
+                        '{"action":"mcp_call","server":"chrome-devtools","tool":"navigate_page","parameters":{"url":"https://example.com","timeout":60000}}',
+                        '{"action":"collab-calendar","args":{"action":"add","title":"驗車","start":"2026-05-23T08:00:00+08:00","end":"2026-05-23T10:30:00+08:00"}}'
+                    ].join('\n');
+
+                    if (needsUserRetryApproval) {
+                        const retryApprovalId = uuidv4();
+                        pendingTasks.set(retryApprovalId, {
+                            type: 'CORRECTION_APPROVAL',
+                            ctx,
+                            timestamp: Date.now(),
+                            feedbackPrompt: `[System Observation]\n` +
+                                `使用者已批准再次矯正執行。請根據下列錯誤，重新輸出一個修正後的 [GOLEM_ACTION]。\n\n` +
+                                `修正規則：\n` +
+                                `- 僅輸出一個 action。\n` +
+                                `- 必須使用有效 action 名稱（command / mcp_call / 已安裝技能）。\n` +
+                                `- mcp_call 必須包含 server + tool。\n` +
+                                `- 若是 collab-calendar，請使用 {"action":"collab-calendar","args":{"action":"add",...}}。\n\n` +
+                                `可用範例：\n${correctionExamples}\n\n` +
+                                `錯誤結果：\n${observation}`,
+                            actionDepth: 1,
+                            maxActionDepth: Number(process.env.GOLEM_MAX_AUTO_TURNS || 5),
+                            nextCorrectionAttempt: currentCorrectionAttempt + 1,
+                        });
+                        await ctx.reply(
+                            `⚠️ 指令已連續矯正失敗 ${currentCorrectionAttempt + 1} 次。\n是否要我要求 Golem 再次修正後重試？`,
+                            {
+                                reply_markup: {
+                                    inline_keyboard: [[
+                                        { text: '✅ 是，要求再矯正一次', callback_data: `RETRYFIX_${retryApprovalId}` },
+                                        { text: '🛑 否，停止本輪 action', callback_data: `STOPFIX_${retryApprovalId}` }
+                                    ]]
+                                }
+                            }
+                        );
+                        return;
+                    }
+
+                    const feedbackPrompt = shouldAutoCorrect
+                        ? `[System Observation]\n` +
+                        `上一輪指令執行失敗，請你立即修正並重新輸出 [GOLEM_ACTION]。\n\n` +
+                        `修正規則：\n` +
+                        `- 只輸出一個最小必要的修正 action。\n` +
+                        `- 優先修正 action 名稱、server/tool、必要參數。\n` +
+                        `- 若使用 command，避免高風險串接語法。\n` +
+                        `- 失敗重點：\n${failedBlocks.join('\n\n---\n\n')}\n\n` +
+                        `可用範例：\n${correctionExamples}\n\n` +
+                        `原始結果：\n${observation}`
+                        : `[System Observation]\nUser approved actions.\nExecution Result:\n${observation}\n\nPlease analyze this result and report to the user using [GOLEM_REPLY].`;
                     try {
                         // ✨ [v9.1] 產線串接：將加工完成的 Observation 放入對話產線 (Dialogue Queue) 取代直接呼叫 sendMessage
                         if (convoManager) {
-                            await convoManager.enqueue(ctx, feedbackPrompt, { isPriority: true, bypassDebounce: true });
+                            await convoManager.enqueue(ctx, feedbackPrompt, {
+                                isPriority: true,
+                                bypassDebounce: true,
+                                isSystemFeedback: true,
+                                allowActions: shouldAutoCorrect,
+                                correctionAttempt: shouldAutoCorrect ? (currentCorrectionAttempt + 1) : currentCorrectionAttempt,
+                            });
                         } else {
                             // 防呆：如果退化回沒有 convoManager，則走舊路
-                            const finalResponse = await brain.sendMessage(feedbackPrompt);
+                            const finalResponse = await brain.sendMessage(feedbackPrompt, false, {
+                                isSystemFeedback: true,
+                                allowActions: shouldAutoCorrect,
+                                correctionAttempt: shouldAutoCorrect ? (currentCorrectionAttempt + 1) : currentCorrectionAttempt,
+                            });
                             await NeuroShunter.dispatch(ctx, finalResponse, brain, controller);
                         }
                     } catch (err) {

@@ -6,6 +6,7 @@ const ActionExecutionGate = require('../../src/managers/ActionExecutionGate');
 const { CONFIG } = require('../../src/config');
 const skillManager = require('../../src/managers/SkillManager');
 const COMMAND_DEFS = require('../../src/config/commands');
+const { v4: uuidv4 } = require('uuid');
 const fs = require('fs');
 const path = require('path');
 
@@ -275,11 +276,64 @@ class NeuroShunter {
                 ` allowActions=${allowActions}, depth=${actionDepth}/${maxActionDepth}`
             );
 
-            if (!parsed.reply && !shouldSuppressReply) {
-                await ctx.reply(
-                    `⚠️ 工具結果已收到，但後續自動行動已暫停。\n` +
-                    `若需要繼續，請明確回覆「繼續」或重新下達下一步指令。`
-                );
+            if (!shouldSuppressReply) {
+                const retryAttempt = Number(options.observationRetryAttempt || 0);
+                const compactActions = JSON.stringify(parsed.actions, null, 2);
+                // 第一次錯誤：不需要使用者批准，先要求 Golem 依範例重寫並自動再執行一次
+                if (retryAttempt < 1 && controller && controller.convoManager) {
+                    const rewritePrompt = `[System Observation]\n` +
+                        `你上一輪輸出的 [GOLEM_ACTION] 無法執行，請先重寫成正確格式後再執行一次。\n\n` +
+                        `[PREVIOUS_INVALID_ACTIONS]\n` +
+                        `${compactActions}\n\n` +
+                        `修正規則：\n` +
+                        `- 只輸出一個最小必要 action。\n` +
+                        `- 若是行事曆，請用：{"action":"collab-calendar","args":{"action":"add","title":"...","start":"...","end":"..."}}\n` +
+                        `- mcp_call 必須包含 server + tool + parameters。\n` +
+                        `- command 必須放在 parameter 欄位。\n`;
+                    await ctx.reply(
+                        `⚠️ 系統偵測到指令格式錯誤，已先要求 Golem 依範例重寫並自動再試一次。`
+                    );
+                    await controller.convoManager.enqueue(ctx, rewritePrompt, {
+                        isPriority: true,
+                        bypassDebounce: true,
+                        isSystemFeedback: true,
+                        allowActions: true,
+                        actionDepth: Number(actionDepth || 0) + 1,
+                        maxActionDepth: Number(maxActionDepth || CONFIG.MAX_AUTO_TURNS || 5),
+                        observationRetryAttempt: retryAttempt + 1,
+                    });
+                } else if (controller && controller.pendingTasks) {
+                    // 第二次仍錯：才出現通訊端批准按鈕
+                    const approvalId = uuidv4();
+                    controller.pendingTasks.set(approvalId, {
+                        type: 'OBSERVATION_ACTION_APPROVAL',
+                        ctx,
+                        timestamp: Date.now(),
+                        proposedActions: parsed.actions,
+                        actionDepth: Number(actionDepth || 0),
+                        maxActionDepth: Number(maxActionDepth || CONFIG.MAX_AUTO_TURNS || 5),
+                    });
+                    await ctx.reply(
+                        `⚠️ 指令重寫後仍然失敗，系統已暫停自動再執行。\n\n` +
+                        `以下是被擋下的候選 action：\n` +
+                        `\`\`\`json\n${compactActions.slice(0, 3500)}\n\`\`\`\n` +
+                        `是否要要求 Golem 依範例重寫後再執行？`,
+                        {
+                            parse_mode: 'Markdown',
+                            reply_markup: {
+                                inline_keyboard: [[
+                                    { text: '✅ 要求 Golem 重寫再執行', callback_data: `RETRYOBS_${approvalId}` },
+                                    { text: '🛑 停止本輪 action', callback_data: `STOPOBS_${approvalId}` }
+                                ]]
+                            }
+                        }
+                    );
+                } else {
+                    await ctx.reply(
+                        `⚠️ 指令重寫後仍失敗，系統已阻擋自動再執行。\n` +
+                        `請在通訊端明確批准下一步（例如回覆「再來一次」或按審批按鈕）後才會繼續。`
+                    );
+                }
             }
             parsed.actions = [];
         }

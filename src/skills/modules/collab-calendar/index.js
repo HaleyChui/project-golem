@@ -13,7 +13,7 @@ function formatEvent(event) {
     const end = new Date(event.end).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei', hour12: false });
     const owner = event.owner === 'golem' ? '🤖 Golem' : '👤 使用者';
     const source = event.source && event.source !== 'local' ? ` [來源: ${event.source}]` : '';
-    let line = `• **${event.title}**\n  時間：${start} → ${end}\n  建立者：${owner}${source}`;
+    let line = `• **${event.title}**\n  ID：\`${event.id || 'N/A'}\`\n  時間：${start} → ${end}\n  建立者：${owner}${source}`;
     if (event.location) line += `\n  地點：${event.location}`;
     if (event.description) line += `\n  備註：${event.description}`;
     return line;

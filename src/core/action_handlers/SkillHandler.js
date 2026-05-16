@@ -3,6 +3,7 @@ const { SCENE_TOOLSETS } = require('../../managers/ToolsetManager');
 const MCPManager   = require('../../mcp/MCPManager');
 const MCPCallValidator = require('../../mcp/MCPCallValidator');
 const MCPToolCatalog = require('../../mcp/MCPToolCatalog');
+const ExampleResolver = require('../../managers/ExampleResolver');
 
 class SkillHandler {
     static _resolveActionArgs(act = {}) {
@@ -17,6 +18,14 @@ class SkillHandler {
 
     static _buildSkillActionExample(skillName, args = {}) {
         const safeName = String(skillName || '').trim() || 'wiki';
+        if (safeName === 'collab-calendar') {
+            return [
+                '{"action":"collab-calendar","args":{"action":"add","title":"倒垃圾（8點前）","start":"2026-05-17T07:30:00+08:00","end":"2026-05-17T08:00:00+08:00","description":"明早八點前完成","reminderMinutes":10}}',
+                '{"action":"collab-calendar","args":{"action":"list"}}',
+                '{"action":"collab-calendar","args":{"action":"update","id":"evt_xxx","title":"【已取消】倒垃圾","description":"垃圾車休假，取消提醒"}}',
+                '{"action":"collab-calendar","args":{"action":"delete","id":"evt_xxx"}}'
+            ].join('\n');
+        }
         const payload = { action: safeName, args: {} };
         const input = args && typeof args === 'object' ? args : {};
         for (const key of Object.keys(input)) {
@@ -55,6 +64,42 @@ class SkillHandler {
             ? `\n正確指令範例：\n${exampleText}`
             : '';
         return `\n\n[Execution Check Reminder]\n請檢查是否成功執行；若未成功，請勿直接 reply 使用者，請先改用正確指令重試一次。${exampleBlock}`;
+    }
+
+    static async _resolveExampleText(brain, hintMeta = {}) {
+        const fallback = String(hintMeta.exampleText || '').trim();
+        try {
+            const query = {
+                lane: hintMeta.lane || 'skill',
+                target: hintMeta.target || '',
+                errorText: hintMeta.errorText || '',
+                userQuery: hintMeta.userQuery || '',
+                attempt: Number(hintMeta.attempt || 0),
+                toolVectorIndex: brain && brain.toolVectorIndex ? brain.toolVectorIndex : null,
+                limit: 3
+            };
+            let resolved = await ExampleResolver.resolveText(query);
+            if (resolved) return resolved;
+
+            // 自動補救：若當下查不到範例，先同步 example/vector 再查一次（不需使用者手動下指令）
+            if (brain) {
+                try {
+                    const ExampleSyncManager = require('../../managers/ExampleSyncManager');
+                    ExampleSyncManager.sync(brain.userDataDir);
+                    if (typeof brain._syncToolVectorIndex === 'function') {
+                        await brain._syncToolVectorIndex();
+                    }
+                    resolved = await ExampleResolver.resolveText({
+                        ...query,
+                        attempt: Number(query.attempt || 0) + 1,
+                        toolVectorIndex: brain.toolVectorIndex || null
+                    });
+                } catch (_) {}
+            }
+            return resolved || fallback;
+        } catch (_) {
+            return fallback;
+        }
     }
 
     static _looksLikeFailure(resultText = '') {
@@ -141,15 +186,19 @@ class SkillHandler {
         }
 
         const sendFeedback = async (message, hintMeta = {}) => {
-            const reminder = SkillHandler._buildPostCheckHint(hintMeta.exampleText || '');
+            const currentActionDepth = Number(dispatchOptions.actionDepth || 0);
+            const canAutoRetryByDepth = currentActionDepth < 1;
+            const resolvedExampleText = await SkillHandler._resolveExampleText(brain, {
+                ...hintMeta,
+                errorText: message,
+                userQuery: ctx && typeof ctx.text === 'string' ? ctx.text : ''
+            });
+            const reminder = SkillHandler._buildPostCheckHint(resolvedExampleText || '');
             const fullMessage = `${message}${reminder}`;
-            const allowActionRetry = hintMeta.allowActions === true;
-            const requireConsentForNextRetry = hintMeta.requireConsent === true;
+            const allowActionRetry = hintMeta.allowActions === true || (hintMeta.allowActions !== false && canAutoRetryByDepth);
             const actionRule = allowActionRetry
                 ? `- 你可以輸出一次 [GOLEM_ACTION] 做修正重試（僅一次）。\n- 重試後請再用 [GOLEM_REPLY] 回報最終結果。`
-                : requireConsentForNextRetry
-                    ? `- 禁止輸出 [GOLEM_ACTION]。\n- 你必須先用 [GOLEM_REPLY] 明確詢問使用者是否同意你再執行一次（例如：是否同意我再重試一次？）。\n- 在使用者回覆同意前，停止自動執行。`
-                    : `- 禁止輸出 [GOLEM_ACTION]。\n- 如果你認為必須繼續使用工具，請先說明原因並等待使用者確認。`;
+                : `- 禁止輸出 [GOLEM_ACTION]。\n- 你必須先用 [GOLEM_REPLY] 明確詢問使用者是否同意你再執行一次（例如：是否同意我再重試一次？）。\n- 在使用者回覆同意前，停止自動執行。`;
             const feedbackPrompt = `[System Observation]\n` +
                 `以下是上一個工具、技能或 MCP 呼叫的執行結果。\n\n` +
                 `限制：\n` +
@@ -166,7 +215,7 @@ class SkillHandler {
                     bypassDebounce: true,
                     isSystemFeedback: true,
                     allowActions: allowActionRetry,
-                    actionDepth: Number(dispatchOptions.actionDepth || 0) + 1,
+                    actionDepth: currentActionDepth + 1,
                     maxActionDepth: Number(dispatchOptions.maxActionDepth || process.env.GOLEM_MAX_AUTO_TURNS || 5),
                     suppressReply: isAuto && isSilent
                 };
@@ -199,7 +248,14 @@ class SkillHandler {
                     const message = MCPCallValidator.formatValidationError(validation);
                     const inlineExample = validation.example ? `\n範例：\n${JSON.stringify(validation.example, null, 2)}` : '';
                     await ctx.reply(`❌ [MCP] 呼叫格式錯誤：${validation.errors.join('; ')}${inlineExample}`);
-                    await sendFeedback(message);
+                    const shouldRetry = Number(dispatchOptions.actionDepth || 0) < 1;
+                    await sendFeedback(message, {
+                        lane: 'mcp',
+                        target: `${server}/${tool}`,
+                        exampleText: validation.example ? JSON.stringify(validation.example, null, 2) : '',
+                        allowActions: shouldRetry,
+                        requireConsent: !shouldRetry
+                    });
                     return true;
                 }
                 const normalizedCall = validation.normalizedCall || { server, tool, parameters };
@@ -232,6 +288,8 @@ class SkillHandler {
                 }
                 const mcpExample = MCPToolCatalog.buildActionExample(normServer, normTool, validation.schema || {});
                 await sendFeedback(`[MCP Result - ${normServer}/${normTool}]\n${feedbackResult}`, {
+                    lane: 'mcp',
+                    target: `${normServer}/${normTool}`,
                     exampleText: mcpExample ? JSON.stringify(mcpExample, null, 2) : ''
                 });
             } catch (e) {
@@ -240,7 +298,11 @@ class SkillHandler {
                 await ctx.reply(`❌ [MCP] ${server}/${tool} 執行錯誤: ${e.message}`);
                 const mcpErrExample = MCPToolCatalog.buildActionExample(server, tool, {});
                 await sendFeedback(`[MCP Error - ${server}/${tool}]\n${e.message}`, {
-                    exampleText: mcpErrExample ? JSON.stringify(mcpErrExample, null, 2) : ''
+                    lane: 'mcp',
+                    target: `${server}/${tool}`,
+                    exampleText: mcpErrExample ? JSON.stringify(mcpErrExample, null, 2) : '',
+                    allowActions: Number(dispatchOptions.actionDepth || 0) < 1,
+                    requireConsent: Number(dispatchOptions.actionDepth || 0) >= 1
                 });
             }
             return true;
@@ -274,6 +336,8 @@ class SkillHandler {
                     console.log(`[Skill] ✅ ${dynamicSkill.name} 完成 (${resultText.length} chars)`);
                     await ctx.reply(`✅ 技能「${dynamicSkill.name}」已完成，正在整理結果...`);
                     await sendFeedback(`[Skill Result - ${dynamicSkill.name}]\n${String(result)}`, {
+                        lane: 'skill',
+                        target: dynamicSkill.name,
                         exampleText: SkillHandler._buildSkillActionExample(dynamicSkill.name, skillArgs),
                         allowActions: SkillHandler._looksLikeFailure(resultText) && Number(dispatchOptions.actionDepth || 0) < 1,
                         requireConsent: SkillHandler._looksLikeFailure(resultText) && Number(dispatchOptions.actionDepth || 0) >= 1
@@ -281,12 +345,16 @@ class SkillHandler {
                 } else {
                     console.log(`[Skill] ✅ ${dynamicSkill.name} 完成 (無回傳值)`);
                     await sendFeedback(`[Skill Result - ${dynamicSkill.name}]\n(無回傳值)`, {
+                        lane: 'skill',
+                        target: dynamicSkill.name,
                         exampleText: SkillHandler._buildSkillActionExample(dynamicSkill.name, skillArgs)
                     });
                 }
             } catch (e) {
                 await ctx.reply(`❌ 技能執行錯誤: ${e.message}`);
                 await sendFeedback(`[Skill Error - ${dynamicSkill.name}]\n${e.message}`, {
+                    lane: 'skill',
+                    target: dynamicSkill.name,
                     exampleText: SkillHandler._buildSkillActionExample(dynamicSkill.name, SkillHandler._resolveActionArgs(act)),
                     allowActions: true
                 });
@@ -296,7 +364,11 @@ class SkillHandler {
         const notFoundHelp = SkillHandler._buildSkillNotFoundHelp(skillName);
         await ctx.reply(notFoundHelp);
         await sendFeedback(`[Skill Error]\n${notFoundHelp}`, {
-            exampleText: SkillHandler._buildSkillActionExample(skillName, SkillHandler._resolveActionArgs(act))
+            lane: 'skill',
+            target: String(skillName || '').trim(),
+            exampleText: SkillHandler._buildSkillActionExample(skillName, SkillHandler._resolveActionArgs(act)),
+            allowActions: Number(dispatchOptions.actionDepth || 0) < 1,
+            requireConsent: Number(dispatchOptions.actionDepth || 0) >= 1
         });
         return true;
     }

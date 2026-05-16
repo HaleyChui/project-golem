@@ -363,6 +363,7 @@ class MCPManager extends EventEmitter {
         this._logs    = [];         // recent call logs
         this._loaded  = false;
         this._loadingPromise = null;
+        this._artifactSyncInFlight = false;
     }
 
     // ─── Singleton ─────────────────────────────────────────────────
@@ -592,6 +593,7 @@ class MCPManager extends EventEmitter {
         }));
         this._saveConfig();
         MCPToolCatalog.writeCatalog(this._configs);
+        this._syncArtifactsOnConfigChange();
     }
 
     // ─── Private ───────────────────────────────────────────────────
@@ -737,9 +739,43 @@ class MCPManager extends EventEmitter {
             const dir = path.dirname(CONFIG_PATH);
             if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
             fs.writeFileSync(CONFIG_PATH, JSON.stringify(this._configs, null, 2), 'utf8');
+            this._syncArtifactsOnConfigChange();
         } catch (e) {
             console.error('[MCPManager] Failed to save config:', e.message);
         }
+    }
+
+    _syncArtifactsOnConfigChange() {
+        if (this._artifactSyncInFlight) return;
+        this._artifactSyncInFlight = true;
+        setImmediate(async () => {
+            try {
+                const ExampleSyncManager = require('../managers/ExampleSyncManager');
+                const CapabilityRegistry = require('../managers/CapabilityRegistry');
+                const userDataDir = path.resolve(process.cwd(), 'golem_memory');
+                CapabilityRegistry.sync(userDataDir);
+                ExampleSyncManager.sync(userDataDir);
+                this.emit('catalogUpdated', {
+                    time: new Date().toISOString(),
+                    servers: this._configs.length
+                });
+
+                // 最佳努力：若 runtime 已有實體，順便刷新向量索引
+                try {
+                    const getOrCreate = global.getOrCreateGolem;
+                    if (typeof getOrCreate === 'function') {
+                        const instance = getOrCreate('golem_A');
+                        if (instance && instance.brain && typeof instance.brain._syncToolVectorIndex === 'function') {
+                            await instance.brain._syncToolVectorIndex();
+                        }
+                    }
+                } catch (_) {}
+            } catch (e) {
+                console.warn(`[MCPManager] capability/example sync failed: ${e.message}`);
+            } finally {
+                this._artifactSyncInFlight = false;
+            }
+        });
     }
 }
 
