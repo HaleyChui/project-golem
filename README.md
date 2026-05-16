@@ -4,7 +4,7 @@
   <p><strong>可長期陪跑的自主 AI 代理系統：Web Gemini、Ollama、LM Studio、多代理、技能、記憶與 Web Dashboard。</strong></p>
 
   <p>
-    <img src="https://img.shields.io/badge/Version-9.6.11-blue?style=for-the-badge" alt="Version">
+    <img src="https://img.shields.io/badge/Version-9.6.12-blue?style=for-the-badge" alt="Version">
     <img src="https://img.shields.io/badge/Node.js-20--22-green?style=for-the-badge&logo=nodedotjs" alt="Node.js">
     <img src="https://img.shields.io/badge/Backend-Gemini%20Web%20%7C%20Ollama%20%7C%20LM%20Studio-orange?style=for-the-badge" alt="Backends">
     <img src="https://img.shields.io/badge/Dashboard-Next.js%2016-black?style=for-the-badge&logo=nextdotjs" alt="Dashboard">
@@ -190,8 +190,15 @@ Token 取得方式請看 [如何獲取 TG 或 DC 的 Token 及開啟權限](docs
 | `/model` | 操作 Web Gemini UI 切換模型。 |
 | `/skills` | 列出已安裝技能。 |
 | `/learn <功能>` | 讓 Golem 嘗試產生或學習新技能。 |
+| `/install skill <path>` | 從本機資料夾安裝技能套件（需含 `manifest.json`）。 |
+| `/install skill-gh <url>` | 從 GitHub repo/tree URL 安裝技能。 |
+| `/install mcp-file <path>` | 從本機 JSON 檔安裝或更新 MCP 伺服器設定。 |
+| `/install mcp-json <json>` | 直接貼單行 JSON 安裝或更新 MCP 伺服器設定。 |
+| `/install mcp-url <url>` | 從 HTTPS JSON URL 安裝或更新 MCP 伺服器設定。 |
 
 更多指令請看 [Golem 指令說明一覽表](docs/golem指令說明一覽表.md)。
+
+遠端安裝採開放來源模式（技能限 github.com、MCP 限 https URL）；安裝風險由使用者自行承擔。
 
 ## Docker / VPS
 

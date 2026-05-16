@@ -60,6 +60,8 @@ class ResponseParser {
         if (actionBlock) {
             // 暴力脫去所有 Markdown 外衣
             let jsonCandidate = actionBlock.replace(/```[a-zA-Z]*\s*/gi, '').replace(/```/g, '').trim();
+            // 常見模型輸出: 在 JSON 前多打一行 "JSON"
+            jsonCandidate = jsonCandidate.replace(/^\s*json\s*\n/i, '').trim();
 
             if (jsonCandidate && jsonCandidate !== 'null') {
                 try {
@@ -94,8 +96,15 @@ class ResponseParser {
 
                     parsed.actions.push(...steps);
                 } catch (e) {
-                    // 如果 JSON 嚴重破裂，啟動絕地救援，嘗試用正則硬挖
-                    const fallbackMatch = jsonCandidate.match(/\[\s*\{[\s\S]*\}\s*\]/) || jsonCandidate.match(/\{[\s\S]*\}/);
+                    // 如果 JSON 嚴重破裂，啟動絕地救援，優先抓「含 action 的完整物件」，
+                    // 避免誤抓到內層陣列（例如 reminders: [{...}]）。
+                    let fallbackMatch = null;
+                    const objectCandidate = jsonCandidate.match(/\{[\s\S]*\}/);
+                    if (objectCandidate) {
+                        fallbackMatch = objectCandidate;
+                    } else {
+                        fallbackMatch = jsonCandidate.match(/\[\s*\{[\s\S]*\}\s*\]/);
+                    }
                     if (fallbackMatch) {
                         try {
                             const fixed = JSON.parse(fallbackMatch[0]);

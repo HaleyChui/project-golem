@@ -238,6 +238,100 @@ class NodeRouter {
             }
         }
 
+        if (text === '/install' || text.startsWith('/install ')) {
+            const InstallerManager = require('../managers/InstallerManager');
+            const payload = text.replace(/^\/install\s*/i, '').trim();
+            if (!payload) {
+                return await reply(
+                    '🧩 用法:\n' +
+                    '`/install skill <本機技能資料夾路徑>`\n' +
+                    '`/install skill-gh <github repo/tree url>`\n' +
+                    '`/install mcp-file <本機 mcp json 路徑>`\n' +
+                    '`/install mcp-json <單行 JSON>`\n' +
+                    '`/install mcp-url <https json url>`\n\n' +
+                    'MCP JSON 至少需包含：`name`, `command`'
+                );
+            }
+
+            const [subCmdRaw, ...rest] = payload.split(/\s+/);
+            const subCmd = String(subCmdRaw || '').toLowerCase();
+            const argText = rest.join(' ').trim();
+
+            try {
+                if (subCmd === 'skill') {
+                    if (!argText) return await reply('⚠️ 用法：`/install skill <本機技能資料夾路徑>`');
+                    const result = await InstallerManager.installSkillFromPath(argText, brain);
+                    return await reply(
+                        `✅ 技能安裝完成\n` +
+                        `- ID: ${result.id}\n` +
+                        `- Name: ${result.name}\n` +
+                        `- Path: \`${result.path}\`\n` +
+                        `- 新增範例: ${result.syncResult.added}\n` +
+                        `- 範例檔: \`${result.syncResult.customPath}\``
+                    );
+                }
+
+                if (subCmd === 'mcp-file') {
+                    if (!argText) return await reply('⚠️ 用法：`/install mcp-file <本機 mcp json 路徑>`');
+                    const result = await InstallerManager.installMcpFromFile(argText, brain);
+                    return await reply(
+                        `✅ MCP 安裝完成\n` +
+                        `- Name: ${result.name}\n` +
+                        `- Command: \`${result.command}\`\n` +
+                        `- Source: \`${result.source}\`\n` +
+                        `- 新增範例: ${result.syncResult.added}\n` +
+                        `- 範例檔: \`${result.syncResult.customPath}\``
+                    );
+                }
+
+                if (subCmd === 'mcp-json') {
+                    if (!argText) return await reply('⚠️ 用法：`/install mcp-json <單行 JSON>`');
+                    const result = await InstallerManager.installMcpFromJson(argText, brain);
+                    return await reply(
+                        `✅ MCP 安裝完成\n` +
+                        `- Name: ${result.name}\n` +
+                        `- Command: \`${result.command}\`\n` +
+                        `- 新增範例: ${result.syncResult.added}\n` +
+                        `- 範例檔: \`${result.syncResult.customPath}\``
+                    );
+                }
+
+                if (subCmd === 'skill-gh') {
+                    if (!argText) return await reply('⚠️ 用法：`/install skill-gh <github repo/tree url>`');
+                    const result = await InstallerManager.installSkillFromGithub(argText, brain);
+                    return await reply(
+                        `✅ 遠端技能安裝完成\n` +
+                        `- ID: ${result.id}\n` +
+                        `- Name: ${result.name}\n` +
+                        `- Repo: ${result.remote.owner}/${result.remote.repo}\n` +
+                        `- Branch: ${result.remote.branch}\n` +
+                        `- Path: \`${result.path}\`\n` +
+                        `- 新增範例: ${result.syncResult.added}\n` +
+                        `- 範例檔: \`${result.syncResult.customPath}\``
+                    );
+                }
+
+                if (subCmd === 'mcp-url') {
+                    if (!argText) return await reply('⚠️ 用法：`/install mcp-url <https json url>`');
+                    const result = await InstallerManager.installMcpFromUrl(argText, brain);
+                    return await reply(
+                        `✅ 遠端 MCP 安裝完成\n` +
+                        `- Name: ${result.name}\n` +
+                        `- Command: \`${result.command}\`\n` +
+                        `- 新增範例: ${result.syncResult.added}\n` +
+                        `- 範例檔: \`${result.syncResult.customPath}\``
+                    );
+                }
+
+                return await reply(
+                    `⚠️ 不支援的 install 子指令: \`${subCmd}\`\n` +
+                    '可用：`skill`, `skill-gh`, `mcp-file`, `mcp-json`, `mcp-url`'
+                );
+            } catch (e) {
+                return await reply(`❌ 安裝失敗: ${e.message}`);
+            }
+        }
+
         // ✨ [v9.1 Feature] 學習新技能 (Web Gemini Mode)
         if (text === '/learn' || text.startsWith('/learn ')) {
             const intent = text.replace(/^\/learn\s*/i, '').trim();
@@ -280,7 +374,7 @@ class NodeRouter {
                     try {
                         const SkillIndexManager = require('../managers/SkillIndexManager');
 
-                        if (runtimeSkillId) {
+                    if (runtimeSkillId) {
                             const SkillPackageRegistry = require('../managers/SkillPackageRegistry');
                             const runtimeTitle = result.name || runtimeSkillId;
                             const runtimeDescription = result.preview || "由 /learn 動態生成的使用者技能";
@@ -317,6 +411,16 @@ class NodeRouter {
                         }
                     } catch (indexError) {
                         console.warn(`⚠️ [NodeRouter] /learn skill index sync failed: ${indexError.message}`);
+                    }
+                    // 自動同步 capability/example + 向量索引
+                    try {
+                        const ExampleSyncManager = require('../managers/ExampleSyncManager');
+                        ExampleSyncManager.sync(brain.userDataDir);
+                        if (brain && typeof brain._syncToolVectorIndex === 'function') {
+                            await brain._syncToolVectorIndex();
+                        }
+                    } catch (syncError) {
+                        console.warn(`⚠️ [NodeRouter] /learn capability/example sync failed: ${syncError.message}`);
                     }
                 }
 
@@ -400,6 +504,15 @@ class NodeRouter {
                 } catch (e) {
                     console.warn(`⚠️ [NodeRouter] GOLEM_SKILL index sync failed: ${e.message}`);
                 }
+                try {
+                    const ExampleSyncManager = require('../managers/ExampleSyncManager');
+                    ExampleSyncManager.sync(brain.userDataDir);
+                    if (brain && typeof brain._syncToolVectorIndex === 'function') {
+                        await brain._syncToolVectorIndex();
+                    }
+                } catch (syncError) {
+                    console.warn(`⚠️ [NodeRouter] GOLEM_SKILL capability/example sync failed: ${syncError.message}`);
+                }
             }
             return await reply(res.success ? `✅ 安裝成功: ${res.name}` : `⚠️ ${res.error}`);
         }
@@ -465,6 +578,100 @@ class NodeRouter {
             } catch (e) {
                 console.error("Failed to list skills:", e);
                 return await reply(`❌ **讀取技能清單失敗**: ${e.message}`);
+            }
+        }
+
+        if (text === '/capabilities') {
+            try {
+                const CapabilityRegistry = require('../managers/CapabilityRegistry');
+                const { registry, path: registryPath } = CapabilityRegistry.sync(brain.userDataDir);
+                const covered = Number(registry.summary.coveredExamples || 0);
+                const total = Number(registry.summary.total || 0);
+                const percent = total > 0 ? ((covered / total) * 100).toFixed(1) : '0.0';
+                return await reply(
+                    `🧭 **Capability Registry 已同步**\n` +
+                    `- Skills: ${registry.summary.skills}\n` +
+                    `- MCP Tools: ${registry.summary.mcpTools}\n` +
+                    `- Total: ${total}\n` +
+                    `- Example Coverage: ${covered}/${total} (${percent}%)\n` +
+                    `- File: \`${registryPath}\``
+                );
+            } catch (e) {
+                return await reply(`❌ 同步 Capability Registry 失敗: ${e.message}`);
+            }
+        }
+
+        if (text === '/examples sync' || text.startsWith('/examples sync ')) {
+            try {
+                const ExampleSyncManager = require('../managers/ExampleSyncManager');
+                const CapabilityRegistry = require('../managers/CapabilityRegistry');
+                const syncResult = ExampleSyncManager.sync(brain.userDataDir);
+                const { registry } = CapabilityRegistry.sync(brain.userDataDir);
+
+                if (brain && typeof brain._syncToolVectorIndex === 'function') {
+                    await brain._syncToolVectorIndex();
+                }
+
+                const covered = Number(registry.summary.coveredExamples || 0);
+                const total = Number(registry.summary.total || 0);
+                return await reply(
+                    `🧩 **Example Sync 完成**\n` +
+                    `- 新增範例: ${syncResult.added}\n` +
+                    `- 自訂範例總數: ${syncResult.totalCustom}\n` +
+                    `- Coverage: ${covered}/${total}\n` +
+                    `- Custom File: \`${syncResult.customPath}\``
+                );
+            } catch (e) {
+                return await reply(`❌ Example Sync 失敗: ${e.message}`);
+            }
+        }
+
+        if (text === '/examples validate' || text.startsWith('/examples validate ')) {
+            try {
+                const ExampleValidator = require('../managers/ExampleValidator');
+                const report = ExampleValidator.validateAll();
+                const topIssues = report.results
+                    .filter(item => item.issues.length > 0)
+                    .slice(0, 12)
+                    .map(item => `- ${item.id}: ${item.issues.join(', ')}`)
+                    .join('\n');
+                return await reply(
+                    `🧪 **Example Validate 完成**\n` +
+                    `- Total: ${report.total}\n` +
+                    `- Valid: ${report.valid}\n` +
+                    `- Invalid: ${report.invalid}\n` +
+                    `${topIssues ? `\n問題摘要:\n${topIssues}` : '\n✅ 未發現結構錯誤'}`
+                );
+            } catch (e) {
+                return await reply(`❌ Example Validate 失敗: ${e.message}`);
+            }
+        }
+
+        if (text === '/mcp sync' || text.startsWith('/mcp sync ')) {
+            try {
+                const CapabilityRegistry = require('../managers/CapabilityRegistry');
+                const ExampleSyncManager = require('../managers/ExampleSyncManager');
+                const MCPManager = require('../mcp/MCPManager');
+                CapabilityRegistry.sync(brain.userDataDir);
+                const syncResult = ExampleSyncManager.sync(brain.userDataDir);
+
+                const mcpManager = MCPManager.getInstance();
+                await mcpManager.load();
+                const tools = mcpManager.getCachedTools();
+
+                if (brain && typeof brain._syncToolVectorIndex === 'function') {
+                    await brain._syncToolVectorIndex();
+                }
+
+                return await reply(
+                    `🔄 **MCP Sync 完成**\n` +
+                    `- 已載入 MCP 工具: ${tools.length}\n` +
+                    `- 新增範例: ${syncResult.added}\n` +
+                    `- 範例檔: \`${syncResult.customPath}\`\n` +
+                    `- 向量索引: 已觸發同步`
+                );
+            } catch (e) {
+                return await reply(`❌ MCP Sync 失敗: ${e.message}`);
             }
         }
 

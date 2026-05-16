@@ -50,6 +50,17 @@ module.exports = [
             { name: '建立一個資料清理技能', description: '範例：學習清洗與格式化輸入資料' }
         ]
     },
+    {
+        command: '/install',
+        description: '安裝本機技能或 MCP 工具，並自動同步 capability/example/vector 索引。',
+        options: [
+            { name: 'skill <path>', description: '由本機技能資料夾安裝（需包含 manifest.json）' },
+            { name: 'skill-gh <url>', description: '由 GitHub repo/tree URL 安裝技能' },
+            { name: 'mcp-file <path>', description: '由本機 MCP JSON 設定檔安裝/更新' },
+            { name: 'mcp-json <json>', description: '貼上單行 JSON 安裝/更新 MCP 設定' },
+            { name: 'mcp-url <url>', description: '由 HTTPS JSON URL 安裝/更新 MCP 設定' }
+        ]
+    },
     { command: '/donate', description: '顯示贊助連結，支持 Project Golem 持續開發。' },
     { command: '/support', description: '顯示贊助連結，等同於 /donate。' },
     { command: '/update', description: '觸發系統更新確認流程，會要求管理員確認後才執行。' },

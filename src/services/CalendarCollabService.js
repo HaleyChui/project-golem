@@ -698,17 +698,10 @@ async function syncFromGoogle() {
   };
 }
 
-function makeAppleEpochScriptDate(dateIso) {
+function makeAppleEpochMs(dateIso) {
   const date = new Date(dateIso);
   if (Number.isNaN(date.getTime())) throw new Error(`Invalid Apple date: ${dateIso}`);
-  return {
-    year: date.getFullYear(),
-    month: date.getMonth() + 1,
-    day: date.getDate(),
-    hour: date.getHours(),
-    minute: date.getMinutes(),
-    second: date.getSeconds(),
-  };
+  return date.getTime();
 }
 
 async function pushEventToGoogle(event) {
@@ -782,8 +775,9 @@ async function pushEventToApple(event) {
   const title = JSON.stringify(String(event.title || ''));
   const location = JSON.stringify(String(event.location || ''));
   const notes = JSON.stringify(String(event.description || ''));
-  const startParts = makeAppleEpochScriptDate(event.start);
-  const endParts = makeAppleEpochScriptDate(event.end);
+  const baseNowMs = Date.now();
+  const startOffsetSec = Math.round((makeAppleEpochMs(event.start) - baseNowMs) / 1000);
+  const endOffsetSec = Math.round((makeAppleEpochMs(event.end) - baseNowMs) / 1000);
   const script = `tell application "Calendar"
 set preferredCalendarName to ${preferredCalendarNameText}
 set preferredCalendarId to ${preferredCalendarIdText}
@@ -812,16 +806,9 @@ end if
 set evtTitle to ${title}
 set evtLoc to ${location}
 set evtNote to ${notes}
-set evtStart to current date
-set year of evtStart to ${startParts.year}
-set month of evtStart to ${startParts.month}
-set day of evtStart to ${startParts.day}
-set time of evtStart to (${startParts.hour} * hours + ${startParts.minute} * minutes + ${startParts.second})
-set evtEnd to current date
-set year of evtEnd to ${endParts.year}
-set month of evtEnd to ${endParts.month}
-set day of evtEnd to ${endParts.day}
-set time of evtEnd to (${endParts.hour} * hours + ${endParts.minute} * minutes + ${endParts.second})
+set nowDate to current date
+set evtStart to nowDate + (${startOffsetSec})
+set evtEnd to nowDate + (${endOffsetSec})
 set matchedEvent to missing value
 repeat with anEvent in (every event of targetCal)
 if ((summary of anEvent as text) is evtTitle) and ((start date of anEvent) is evtStart) then
@@ -848,7 +835,8 @@ async function deleteEventFromApple(event) {
   const preferredCalendarIdText = JSON.stringify(preferredCalendarId);
   const preferredCalendarNameText = JSON.stringify(preferredCalendarName);
   const title = JSON.stringify(String(event.title || ''));
-  const startParts = makeAppleEpochScriptDate(event.start);
+  const baseNowMs = Date.now();
+  const startOffsetSec = Math.round((makeAppleEpochMs(event.start) - baseNowMs) / 1000);
   const script = `tell application "Calendar"
 set preferredCalendarName to ${preferredCalendarNameText}
 set preferredCalendarId to ${preferredCalendarIdText}
@@ -875,11 +863,8 @@ if (count of writableCalendars) is 0 then return "ok"
 set targetCal to first item of writableCalendars
 end if
 set evtTitle to ${title}
-set evtStart to current date
-set year of evtStart to ${startParts.year}
-set month of evtStart to ${startParts.month}
-set day of evtStart to ${startParts.day}
-set time of evtStart to (${startParts.hour} * hours + ${startParts.minute} * minutes + ${startParts.second})
+set nowDate to current date
+set evtStart to nowDate + (${startOffsetSec})
 repeat with anEvent in (every event of targetCal)
 if ((summary of anEvent as text) is evtTitle) and ((start date of anEvent) is evtStart) then
 delete anEvent

@@ -124,7 +124,7 @@ function isLikelyCommandTask(query) {
 function loadCoreSlashCommands() {
     try {
         const defs = require('../config/commands');
-        const keep = new Set(['/new', '/new_memory', '/skills', '/learn', '/toolset', '/search', '/project']);
+        const keep = new Set(['/new', '/new_memory', '/skills', '/learn', '/install', '/toolset', '/search', '/project']);
         return (Array.isArray(defs) ? defs : [])
             .filter((item) => item && keep.has(String(item.command || '').trim()))
             .map((item) => ({
