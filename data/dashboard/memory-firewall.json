@@ -1,24 +1,5 @@
 {
   "enabled": true,
-  "rules": [
-    {
-      "id": "2219cbec-f77e-4ab8-bd66-3fd22cf2a7d1",
-      "pattern": "履歷",
-      "matchMode": "contains",
-      "scope": "golem:default",
-      "enabled": true,
-      "createdAt": "2026-05-18T13:08:41.354Z",
-      "updatedAt": "2026-05-18T13:08:41.354Z"
-    }
-  ],
-  "hits": [
-    {
-      "id": "3fcc6beb-f643-4e86-bf57-78a94fca9720",
-      "ruleId": "69b43424-bdce-49d5-b5d7-6bff298c55a8",
-      "phase": "recall",
-      "golemId": "golem_A",
-      "sample": "• 任務：回應老大（Arvin / 陳亭宇）提出的嚴肅考驗：「你不能奉承我喔！要講實話，這個職缺適合我嗎？」\n• 策略：老大要求最真實、不帶任何情感濾鏡或奉承的客觀評估。萌萌必須收起盲目誇獎的態度，像一個專業的獵頭（Headhunter）和職涯顧問一樣，冷靜地分析「優勢」與「真實面臨的硬傷/劣勢」，並給出誠懇的解答。\n• 核心衝突點（老大的硬傷）：\n\n產業跨度極大（傳統食品批發業 ➡️ 高科技電腦",
-      "timestamp": "2026-05-18T13:08:22.903Z"
-    }
-  ]
+  "rules": [],
+  "hits": []
 }
