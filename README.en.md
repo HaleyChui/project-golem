@@ -85,17 +85,6 @@ Many AI tools are great for one-shot prompts, but weak for continuous work. Proj
 
 ## UI showcase
 
-<img src="assets/screenshots/dashboard-overview.png" width="900" alt="Dashboard Overview" />
-<img src="assets/screenshots/dashboard-chat.png" width="900" alt="Direct Chat" />
-<img src="assets/screenshots/dashboard-skills.png" width="900" alt="Skills" />
-<img src="assets/screenshots/dashboard-memory-core.png" width="900" alt="Memory Core" />
-<img src="assets/screenshots/dashboard-stocks.png" width="900" alt="Stocks" />
-<img src="assets/screenshots/dashboard-mcp.png" width="900" alt="MCP Tools" />
-<img src="assets/screenshots/dashboard-calendar.png" width="900" alt="Calendar" />
-<img src="assets/screenshots/dashboard-reference-files.png" width="900" alt="Reference Files" />
-<img src="assets/screenshots/dashboard-diary.png" width="900" alt="Bond Journal" />
-<img src="assets/screenshots/dashboard-rpg.png" width="900" alt="Text RPG" />
-<img src="assets/screenshots/dashboard-settings.png" width="900" alt="System Settings" />
 
 Current main dashboard routes (from `web-dashboard/src/app/dashboard`) include:
 
@@ -124,8 +113,6 @@ Please put screenshots under `assets/screenshots/` with these filenames:
 
 | Priority | Route | Suggested filename |
 | --- | --- | --- |
-| Required | `/dashboard` | `assets/screenshots/dashboard-overview.png` |
-| Required | `/dashboard/chat` | `assets/screenshots/dashboard-chat.png` |
 | Required | `/dashboard/stocks` | `assets/screenshots/dashboard-stocks.png` |
 | Required | `/dashboard/calendar` | `assets/screenshots/dashboard-calendar.png` |
 | Required | `/dashboard/rpg` | `assets/screenshots/dashboard-rpg.png` |
@@ -139,8 +126,6 @@ Please put screenshots under `assets/screenshots/` with these filenames:
 | Recommended | `/dashboard/agents` | `assets/screenshots/dashboard-agents.png` |
 | Recommended | `/dashboard/office` | `assets/screenshots/dashboard-office.png` |
 | Recommended | `/dashboard/memory-firewall` | `assets/screenshots/dashboard-memory-firewall.png` |
-| Recommended | `/dashboard/reference-files` | `assets/screenshots/dashboard-reference-files.png` |
-| Recommended | `/dashboard/diary` | `assets/screenshots/dashboard-diary.png` |
 | Recommended | `/dashboard/persona` | `assets/screenshots/dashboard-persona.png` |
 
 After you add these images, I can produce a final polished README layout with grouped visual sections.
