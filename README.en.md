@@ -85,10 +85,17 @@ Many AI tools are great for one-shot prompts, but weak for continuous work. Proj
 
 ## UI showcase
 
-<img src="assets/1.jpg" width="900" alt="Dashboard Overview" />
-<img src="assets/3.jpg" width="900" alt="Web Terminal" />
-<img src="assets/4.jpg" width="900" alt="Skill Manager" />
-<img src="assets/8.jpg" width="900" alt="Memory Core" />
+<img src="assets/screenshots/dashboard-overview.png" width="900" alt="Dashboard Overview" />
+<img src="assets/screenshots/dashboard-chat.png" width="900" alt="Direct Chat" />
+<img src="assets/screenshots/dashboard-skills.png" width="900" alt="Skills" />
+<img src="assets/screenshots/dashboard-memory-core.png" width="900" alt="Memory Core" />
+<img src="assets/screenshots/dashboard-stocks.png" width="900" alt="Stocks" />
+<img src="assets/screenshots/dashboard-mcp.png" width="900" alt="MCP Tools" />
+<img src="assets/screenshots/dashboard-calendar.png" width="900" alt="Calendar" />
+<img src="assets/screenshots/dashboard-reference-files.png" width="900" alt="Reference Files" />
+<img src="assets/screenshots/dashboard-diary.png" width="900" alt="Bond Journal" />
+<img src="assets/screenshots/dashboard-rpg.png" width="900" alt="Text RPG" />
+<img src="assets/screenshots/dashboard-settings.png" width="900" alt="System Settings" />
 
 Current main dashboard routes (from `web-dashboard/src/app/dashboard`) include:
 
