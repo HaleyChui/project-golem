@@ -12,6 +12,7 @@ const {
     resolveMembership,
     signInWithEmailPassword,
     registerWithEmailPassword,
+    sendPasswordReset,
     refreshWithRefreshToken,
     fetchMembershipByUid,
     getEntitlements,
@@ -151,6 +152,161 @@ function quoteConversionSymbol(quote) {
     if (q === 'USD') return null;
     if (FIAT_STABLE_QUOTES.has(q)) return `${q}-USD`;
     return null;
+}
+
+function toDerivativesSymbol(symbol) {
+    const { base, quote } = splitPair(symbol);
+    if (!base) return '';
+    const normalizedQuote = FIAT_STABLE_QUOTES.has(String(quote || '').toUpperCase()) ? 'USDT' : String(quote || 'USDT').toUpperCase();
+    return `${base}${normalizedQuote}`;
+}
+
+function mapTimeframeToBinancePeriod(timeframe) {
+    const safe = String(timeframe || '15m').toLowerCase();
+    if (safe === '5m') return '5m';
+    if (safe === '15m') return '15m';
+    if (safe === '1h') return '1h';
+    if (safe === '1d') return '1d';
+    return '1d';
+}
+
+function mapTimeframeToBybitPeriod(timeframe) {
+    const safe = String(timeframe || '15m').toLowerCase();
+    if (safe === '5m') return '5min';
+    if (safe === '15m') return '15min';
+    if (safe === '1h') return '1h';
+    if (safe === '1d') return '1d';
+    return '1d';
+}
+
+function mapTimeframeToOkxPeriod(timeframe) {
+    const safe = String(timeframe || '15m').toLowerCase();
+    if (safe === '5m') return '5m';
+    if (safe === '15m') return '15m';
+    if (safe === '1h') return '1H';
+    if (safe === '1d') return '1D';
+    return '1D';
+}
+
+async function fetchBinanceLongShort(symbol, timeframe) {
+    const pair = toDerivativesSymbol(symbol);
+    const period = mapTimeframeToBinancePeriod(timeframe);
+    const cacheKey = `positioning:binance:${pair}:${period}`;
+    const cached = getCached(cacheKey);
+    if (cached) return cached;
+    const url = `https://fapi.binance.com/futures/data/globalLongShortAccountRatio?symbol=${encodeURIComponent(pair)}&period=${encodeURIComponent(period)}&limit=80`;
+    const payload = await fetchJson(url);
+    const list = Array.isArray(payload) ? payload : [];
+    const points = list
+        .map((item) => {
+            const timestamp = Number(item?.timestamp || 0);
+            const ratio = Number(item?.longShortRatio || 0);
+            const longAccount = Number(item?.longAccount || 0);
+            const shortAccount = Number(item?.shortAccount || 0);
+            if (!Number.isFinite(timestamp) || !Number.isFinite(ratio) || timestamp <= 0) return null;
+            return {
+                time: new Date(timestamp).toISOString(),
+                value: ratio,
+                longRatio: Number.isFinite(longAccount) ? longAccount : null,
+                shortRatio: Number.isFinite(shortAccount) ? shortAccount : null,
+            };
+        })
+        .filter(Boolean);
+    return setCached(cacheKey, {
+        source: 'binance',
+        metric: 'long_short_ratio',
+        pair,
+        points,
+    }, 60 * 1000);
+}
+
+async function fetchBybitLongShort(symbol, timeframe) {
+    const pair = toDerivativesSymbol(symbol);
+    const period = mapTimeframeToBybitPeriod(timeframe);
+    const cacheKey = `positioning:bybit:${pair}:${period}`;
+    const cached = getCached(cacheKey);
+    if (cached) return cached;
+    const url = `https://api.bybit.com/v5/market/account-ratio?category=linear&symbol=${encodeURIComponent(pair)}&period=${encodeURIComponent(period)}&limit=80`;
+    const payload = await fetchJson(url);
+    const list = Array.isArray(payload?.result?.list) ? payload.result.list : [];
+    const points = list
+        .map((item) => {
+            const timestamp = Number(item?.timestamp || 0);
+            const buyRatio = Number(item?.buyRatio || item?.buy_ratio || 0);
+            const sellRatio = Number(item?.sellRatio || item?.sell_ratio || 0);
+            const ratio = sellRatio > 0 ? buyRatio / sellRatio : (buyRatio > 0 ? buyRatio : 0);
+            if (!Number.isFinite(timestamp) || !Number.isFinite(ratio) || timestamp <= 0) return null;
+            return {
+                time: new Date(timestamp).toISOString(),
+                value: ratio,
+                longRatio: Number.isFinite(buyRatio) ? buyRatio : null,
+                shortRatio: Number.isFinite(sellRatio) ? sellRatio : null,
+            };
+        })
+        .filter(Boolean)
+        .sort((a, b) => Date.parse(a.time) - Date.parse(b.time));
+    return setCached(cacheKey, {
+        source: 'bybit',
+        metric: 'long_short_ratio',
+        pair,
+        points,
+    }, 60 * 1000);
+}
+
+async function fetchOkxLongShort(symbol, timeframe) {
+    const { base } = splitPair(symbol);
+    const ccy = String(base || '').toUpperCase();
+    if (!ccy) throw createHttpError(400, 'Missing base symbol');
+    const period = mapTimeframeToOkxPeriod(timeframe);
+    const cacheKey = `positioning:okx:${ccy}:${period}`;
+    const cached = getCached(cacheKey);
+    if (cached) return cached;
+    const urls = [
+        `https://www.okx.com/api/v5/rubik/stat/contracts/long-short-account-ratio-contract?ccy=${encodeURIComponent(ccy)}&period=${encodeURIComponent(period)}`,
+        `https://www.okx.com/api/v5/rubik/stat/contracts/long-short-account-ratio?ccy=${encodeURIComponent(ccy)}&period=${encodeURIComponent(period)}`,
+    ];
+    let list = [];
+    let lastError = null;
+    for (const url of urls) {
+        try {
+            const payload = await fetchJson(url);
+            const dataList = Array.isArray(payload?.data) ? payload.data : [];
+            if (dataList.length) {
+                list = dataList;
+                break;
+            }
+        } catch (error) {
+            lastError = error;
+        }
+    }
+    if (!list.length && lastError) {
+        // OKX may return 400 for unsupported ccy/period combinations.
+        // Return empty data instead of failing the entire card.
+        const statusCode = Number(lastError?.statusCode || 0);
+        if (statusCode && statusCode !== 400) throw lastError;
+    }
+    const points = list
+        .map((item) => {
+            const timestamp = Number(item?.ts || item?.timestamp || 0);
+            const ratio = Number(item?.ratio || item?.longShortRatio || item?.long_short_ratio || 0);
+            const longRatio = Number(item?.longRatio || item?.long_ratio || 0);
+            const shortRatio = Number(item?.shortRatio || item?.short_ratio || 0);
+            if (!Number.isFinite(timestamp) || !Number.isFinite(ratio) || timestamp <= 0) return null;
+            return {
+                time: new Date(timestamp).toISOString(),
+                value: ratio,
+                longRatio: Number.isFinite(longRatio) && longRatio > 0 ? longRatio : null,
+                shortRatio: Number.isFinite(shortRatio) && shortRatio > 0 ? shortRatio : null,
+            };
+        })
+        .filter(Boolean)
+        .sort((a, b) => Date.parse(a.time) - Date.parse(b.time));
+    return setCached(cacheKey, {
+        source: 'okx',
+        metric: 'long_short_ratio',
+        pair: ccy,
+        points,
+    }, 60 * 1000);
 }
 
 async function fetchJson(url) {
@@ -704,7 +860,7 @@ module.exports = function registerCryptoRoutes() {
 
     router.post('/api/crypto/membership/login', async (req, res) => {
         try {
-            const email = String(req.body?.email || '').trim();
+            const email = String(req.body?.email || '').trim().toLowerCase();
             const password = String(req.body?.password || '').trim();
             if (!email || !password) {
                 return res.status(400).json({ error: 'email_and_password_required' });
@@ -747,7 +903,7 @@ module.exports = function registerCryptoRoutes() {
 
     router.post('/api/crypto/membership/register', async (req, res) => {
         try {
-            const email = String(req.body?.email || '').trim();
+            const email = String(req.body?.email || '').trim().toLowerCase();
             const password = String(req.body?.password || '').trim();
             if (!email || !password) {
                 return res.status(400).json({ error: 'email_and_password_required' });
@@ -818,6 +974,19 @@ module.exports = function registerCryptoRoutes() {
         return res.json({ success: true });
     });
 
+    router.post('/api/crypto/membership/forgot-password', async (req, res) => {
+        try {
+            const email = String(req.body?.email || '').trim().toLowerCase();
+            if (!email) {
+                return res.status(400).json({ error: 'email_required' });
+            }
+            await sendPasswordReset(email);
+            return res.json({ success: true });
+        } catch (error) {
+            return res.status(400).json({ error: error.message || 'crypto_membership_forgot_password_failed' });
+        }
+    });
+
     router.get('/api/crypto/membership/status', attachMembership, (req, res) => {
         return res.json({
             success: true,
@@ -865,8 +1034,8 @@ module.exports = function registerCryptoRoutes() {
             const symbol = normalizeSymbol(req.query.symbol);
             const range = String(req.query.range || '3mo');
             const interval = String(req.query.interval || (range === '1d' ? '5m' : '1d'));
-            const allowedRanges = new Set(['1d', '5d', '1mo', '3mo', '6mo', '1y', '2y']);
-            const allowedIntervals = new Set(['1m', '5m', '15m', '30m', '60m', '1d', '1wk']);
+            const allowedRanges = new Set(['1d', '2d', '5d', '1mo', '3mo', '6mo', '1y', '2y']);
+            const allowedIntervals = new Set(['1m', '5m', '15m', '30m', '60m', '1d', '1wk', '1mo']);
             if (!symbol) return res.status(400).json({ error: 'Missing symbol' });
             if (!allowedRanges.has(range)) return res.status(400).json({ error: 'Unsupported range' });
             if (!allowedIntervals.has(interval)) return res.status(400).json({ error: 'Unsupported interval' });
@@ -916,6 +1085,30 @@ module.exports = function registerCryptoRoutes() {
         } catch (error) {
             console.error('[Crypto] Failed to search symbols:', error);
             return res.status(error.statusCode || 500).json({ error: error.message });
+        }
+    });
+
+    router.get('/api/crypto/positioning', attachMembership, requireSponsorTier, async (req, res) => {
+        try {
+            const symbol = normalizeSymbol(req.query.symbol);
+            const source = String(req.query.source || 'binance').trim().toLowerCase();
+            const timeframe = String(req.query.timeframe || '15m').trim();
+            if (!symbol) return res.status(400).json({ error: 'Missing symbol' });
+
+            let data = null;
+            if (source === 'binance') data = await fetchBinanceLongShort(symbol, timeframe);
+            else if (source === 'bybit') data = await fetchBybitLongShort(symbol, timeframe);
+            else if (source === 'okx') data = await fetchOkxLongShort(symbol, timeframe);
+            else return res.status(400).json({ error: 'Unsupported source' });
+
+            return res.json({
+                success: true,
+                positioning: data,
+                generatedAt: new Date().toISOString(),
+            });
+        } catch (error) {
+            console.error('[Crypto] Failed to fetch positioning:', error);
+            return res.status(error.statusCode || 500).json({ error: error.message || 'positioning_fetch_failed' });
         }
     });
 

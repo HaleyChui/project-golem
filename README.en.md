@@ -4,7 +4,7 @@
   <p><strong>Your AI operations hub: chat, act, remember, and collaborate over the long run.</strong></p>
 
   <p>
-    <img src="https://img.shields.io/badge/version-9.7.0-blue?style=for-the-badge" alt="version" />
+    <img src="https://img.shields.io/badge/version-9.7.2-blue?style=for-the-badge" alt="version" />
     <img src="https://img.shields.io/badge/node.js-20~22-3C873A?style=for-the-badge&logo=nodedotjs&logoColor=white" alt="node" />
     <img src="https://img.shields.io/badge/backend-gemini%20web%20%7C%20ollama%20%7C%20lmstudio-orange?style=for-the-badge" alt="backend" />
     <img src="https://img.shields.io/badge/dashboard-next.js-black?style=for-the-badge&logo=nextdotjs" alt="dashboard" />
@@ -124,32 +124,23 @@ Current main dashboard routes (from `web-dashboard/src/app/dashboard`) include:
 - npm
 - Chromium / Google Chrome (required for Gemini Web mode)
 
-### 2) Install and run
+### 2) Install and start (recommended)
+
+Windows (use Git Bash):
 
 ```bash
-npm install
-npx playwright install chromium
-cp .env.example .env
-npm run dashboard
+cd /path/to/your/project-golem-main
+./setup.sh
 ```
 
-Then open:
-
-```text
-http://localhost:3000/dashboard
-```
-
-### 3) One-click scripts (optional)
-
-macOS / Linux:
+macOS (use Terminal):
 
 ```bash
-chmod +x setup.sh
-./setup.sh --magic
-./setup.sh --start
+cd /path/to/your/project-golem-main
+./setup.sh
 ```
 
-Windows users can run `setup.bat` / `Start-Golem.bat`, or use Git Bash with `./setup.sh --magic`.
+Press Enter and the script will guide you through installation or open the startup menu.
 
 ---
 

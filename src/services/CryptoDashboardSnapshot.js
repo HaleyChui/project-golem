@@ -848,6 +848,7 @@ async function refreshCryptoSnapshot(options = {}) {
         selected,
         indicators,
         news,
+        positioning: previous.positioning || null,
         watchlist: visibleQuotes.length ? visibleQuotes : quotes,
         breadth: calculateBreadth(visibleQuotes.length ? visibleQuotes : quotes),
         quoteErrors: [...quoteErrors, ...historyErrors],

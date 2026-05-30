@@ -3,8 +3,10 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
     Bar,
-    BarChart,
     CartesianGrid,
+    ComposedChart,
+    Legend,
+    Line,
     ResponsiveContainer,
     Tooltip,
     XAxis,
@@ -16,6 +18,8 @@ import {
     BarChart3,
     BrainCircuit,
     Check,
+    ChevronLeft,
+    ChevronRight,
     Coffee,
     Info,
     LineChart,
@@ -178,6 +182,22 @@ type NewsResponse = {
     news?: CryptoNews;
 };
 
+type PositioningPoint = {
+    time: string;
+    value: number;
+    longRatio?: number | null;
+    shortRatio?: number | null;
+};
+
+type PositioningResponse = {
+    positioning?: {
+        source: "binance" | "bybit" | "okx";
+        metric: "long_short_ratio";
+        pair: string;
+        points: PositioningPoint[];
+    };
+};
+
 type SnapshotRefreshResponse = {
     snapshot?: CryptoDashboardSnapshot;
     quota?: {
@@ -219,6 +239,8 @@ type AccessGateState = {
     step: 1 | 2;
     note?: string;
 };
+type PositioningPeriod = "5m" | "15m" | "1h" | "1d";
+type PositioningViewMode = "ratio" | "inference";
 
 type CryptoDashboardSnapshot = {
     source: string;
@@ -235,6 +257,23 @@ type CryptoDashboardSnapshot = {
         averageMove: number;
         totalTurnover: number;
         count: number;
+    };
+    positioning?: {
+        source: "binance" | "bybit" | "okx";
+        period: PositioningPeriod;
+        pair: string;
+        latest: {
+            ratio: number;
+            longPct: number | null;
+            shortPct: number | null;
+            time: string;
+        } | null;
+        series: Array<{
+            time: string;
+            ratio: number;
+            longPct: number;
+            shortPct: number;
+        }>;
     };
     quoteErrors: Array<{ symbol: string; error: string }>;
     generatedAt: string;
@@ -326,12 +365,27 @@ const CRYPTO_SYMBOL_RE = /^[A-Z0-9]{2,12}[-/](USD|USDT|USDC|BUSD|DAI|BTC|ETH)$/;
 const CRYPTO_QUOTE_SUFFIXES = ["USDT", "USDC", "BUSD", "DAI", "USD", "BTC", "ETH"] as const;
 const STABLE_QUOTES = new Set(["USD", "USDT", "USDC", "BUSD", "DAI"]);
 type QuotePreference = "USDT" | "USDC";
-const RANGE_MAP: Record<RangeKey, { range: string; interval: string }> = {
-    "5m": { range: "1d", interval: "5m" },
-    "15m": { range: "5d", interval: "15m" },
-    "1h": { range: "1mo", interval: "60m" },
-    "1d": { range: "1y", interval: "1d" },
-    "1M": { range: "1mo", interval: "1d" },
+const RANGE_MAP: Record<RangeKey, { range: string; interval: string; label: string }> = {
+    "5m": { range: "2d", interval: "5m", label: "5m" },
+    "15m": { range: "5d", interval: "15m", label: "15m" },
+    "1h": { range: "1mo", interval: "60m", label: "1H" },
+    "1d": { range: "1y", interval: "1d", label: "1D" },
+    "1M": { range: "2y", interval: "1mo", label: "1M" },
+};
+const HISTORY_RANGE_ORDER = ["1d", "2d", "5d", "1mo", "3mo", "6mo", "1y", "2y"] as const;
+const CHART_WINDOW_SIZE: Record<RangeKey, number> = {
+    "5m": 90,
+    "15m": 90,
+    "1h": 120,
+    "1d": 120,
+    "1M": 60,
+};
+const CHART_PAN_STEP: Record<RangeKey, number> = {
+    "5m": 30,
+    "15m": 24,
+    "1h": 24,
+    "1d": 20,
+    "1M": 12,
 };
 
 function normalizeSymbol(input: string, preferredQuote: QuotePreference = "USDT") {
@@ -435,6 +489,9 @@ function getLabelForPoint(point: HistoryPoint, range: RangeKey, localeCode: stri
     if (range === "5m" || range === "15m" || range === "1h") {
         return new Intl.DateTimeFormat(localeCode, { hour: "2-digit", minute: "2-digit" }).format(date);
     }
+    if (range === "1M") {
+        return new Intl.DateTimeFormat(localeCode, { year: "2-digit", month: "2-digit" }).format(date);
+    }
     return new Intl.DateTimeFormat(localeCode, { month: "2-digit", day: "2-digit" }).format(date);
 }
 
@@ -443,6 +500,51 @@ function buildChartData(points: HistoryPoint[], range: RangeKey, localeCode: str
         ...point,
         label: getLabelForPoint(point, range, localeCode),
     }));
+}
+
+function aggregateHistoryPoints(points: HistoryPoint[], mode: "day" | "month") {
+    const buckets = new Map<string, HistoryPoint[]>();
+    for (const point of points) {
+        const date = new Date(point.time);
+        if (!Number.isFinite(date.getTime())) continue;
+        const key = mode === "day"
+            ? date.toISOString().slice(0, 10)
+            : `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}`;
+        const list = buckets.get(key) || [];
+        list.push(point);
+        buckets.set(key, list);
+    }
+    const aggregated: HistoryPoint[] = [];
+    for (const [key, list] of buckets.entries()) {
+        const sorted = [...list].sort((a, b) => Date.parse(a.time) - Date.parse(b.time));
+        const first = sorted[0];
+        const last = sorted[sorted.length - 1];
+        const high = sorted.reduce((max, p) => Math.max(max, Number(p.high ?? p.close)), Number(first.high ?? first.close));
+        const low = sorted.reduce((min, p) => Math.min(min, Number(p.low ?? p.close)), Number(first.low ?? first.close));
+        const volume = sorted.reduce((sum, p) => sum + Number(p.volume || 0), 0);
+        const time = mode === "day"
+            ? `${key}T00:00:00.000Z`
+            : `${key}-01T00:00:00.000Z`;
+        aggregated.push({
+            time,
+            price: Number(last.close || last.price || 0),
+            close: Number(last.close || last.price || 0),
+            open: Number(first.open ?? first.close ?? first.price ?? 0),
+            high,
+            low,
+            volume,
+        });
+    }
+    return aggregated.sort((a, b) => Date.parse(a.time) - Date.parse(b.time));
+}
+
+function normalizeHistoryForRange(points: HistoryPoint[], range: RangeKey) {
+    if (!Array.isArray(points) || !points.length) return [];
+    if (range === "1d") return aggregateHistoryPoints(points, "day").slice(-400);
+    if (range === "1M") return aggregateHistoryPoints(points, "month").slice(-120);
+    if (range === "1h") return points.slice(-240);
+    if (range === "15m") return points.slice(-240);
+    return points.slice(-320);
 }
 
 function getFreshnessLabel(value: string, localeCode: string) {
@@ -456,6 +558,17 @@ function getFreshnessLabel(value: string, localeCode: string) {
     }).format(new Date(parsed));
 }
 
+function resolveHistoryConfigForTier(
+    desired: { range: string; interval: string; label: string },
+    historyRangeLimit?: string
+) {
+    const desiredIndex = HISTORY_RANGE_ORDER.indexOf(desired.range as typeof HISTORY_RANGE_ORDER[number]);
+    const limitIndex = HISTORY_RANGE_ORDER.indexOf(String(historyRangeLimit || "1d") as typeof HISTORY_RANGE_ORDER[number]);
+    if (desiredIndex === -1 || limitIndex === -1) return desired;
+    if (desiredIndex <= limitIndex) return desired;
+    return { ...desired, range: HISTORY_RANGE_ORDER[limitIndex] };
+}
+
 function getNextUtcResetLabel(localeCode: string) {
     const now = new Date();
     const next = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1, 0, 0, 0));
@@ -467,6 +580,56 @@ function getNextUtcResetLabel(localeCode: string) {
         timeZone: "UTC",
         hour12: false,
     }).format(next);
+}
+
+function formatMembershipAuthError(error: unknown, isEnglish: boolean, mode: "login" | "register") {
+    const fallback = isEnglish
+        ? (mode === "login" ? "Unable to login. Please try again." : "Unable to register. Please try again.")
+        : (mode === "login" ? "無法登入，請稍後再試。" : "無法註冊，請稍後再試。");
+    const rawMessage = error instanceof Error ? error.message : String(error || "");
+    const upper = rawMessage.toUpperCase();
+
+    if (upper.includes("EMAIL_EXISTS") || upper.includes("EMAIL-ALREADY-IN-USE")) {
+        return isEnglish ? "This email is already registered." : "這個 Email 已經被註冊。";
+    }
+    if (upper.includes("INVALID_LOGIN_CREDENTIALS") || upper.includes("INVALID_PASSWORD") || upper.includes("EMAIL_NOT_FOUND")) {
+        return isEnglish ? "Incorrect email or password." : "Email 或密碼錯誤。";
+    }
+    if (upper.includes("INVALID_EMAIL")) {
+        return isEnglish ? "Invalid email format." : "Email 格式不正確。";
+    }
+    if (upper.includes("WEAK_PASSWORD") || upper.includes("PASSWORD_DOES_NOT_MEET_REQUIREMENTS") || upper.includes("PASSWORD_TOO_SHORT")) {
+        return isEnglish ? "Password is too weak. Use at least 6 characters." : "密碼強度不足，請至少 6 個字元。";
+    }
+    if (upper.includes("TOO_MANY_ATTEMPTS_TRY_LATER")) {
+        return isEnglish ? "Too many attempts. Please try again later." : "嘗試次數過多，請稍後再試。";
+    }
+    if (error instanceof ApiError && error.payload && typeof error.payload === "object") {
+        const payload = error.payload as Record<string, unknown>;
+        const payloadMessage = String(payload.message || payload.error || "").trim();
+        if (payloadMessage) return payloadMessage;
+    }
+    return rawMessage || fallback;
+}
+
+function formatPasswordResetError(error: unknown, isEnglish: boolean) {
+    const fallback = isEnglish
+        ? "Unable to send reset email. Please try again later."
+        : "無法送出重設信，請稍後再試。";
+    const rawMessage = error instanceof Error ? error.message : String(error || "");
+    const upper = rawMessage.toUpperCase();
+    if (upper.includes("EMAIL_NOT_FOUND")) {
+        return isEnglish ? "This email is not registered yet." : "這個 Email 尚未註冊。";
+    }
+    if (upper.includes("INVALID_EMAIL")) {
+        return isEnglish ? "Invalid email format." : "Email 格式不正確。";
+    }
+    if (error instanceof ApiError && error.payload && typeof error.payload === "object") {
+        const payload = error.payload as Record<string, unknown>;
+        const payloadMessage = String(payload.message || payload.error || "").trim();
+        if (payloadMessage) return payloadMessage;
+    }
+    return rawMessage || fallback;
 }
 
 function calculateSmaAt(points: Array<{ close: number }>, index: number, period: number) {
@@ -673,6 +836,12 @@ export default function CryptoAnalysisPage() {
     const [isBenefitsModalOpen, setIsBenefitsModalOpen] = useState(false);
     const [isAccountModalOpen, setIsAccountModalOpen] = useState(false);
     const [authMode, setAuthMode] = useState<"login" | "register">("login");
+    const [chartWindowEnd, setChartWindowEnd] = useState<number | null>(null);
+    const [positioningSource, setPositioningSource] = useState<"binance" | "bybit" | "okx">("binance");
+    const [positioningPeriod, setPositioningPeriod] = useState<PositioningPeriod>("15m");
+    const [positioningViewMode, setPositioningViewMode] = useState<PositioningViewMode>("ratio");
+    const [positioningData, setPositioningData] = useState<PositioningResponse["positioning"] | null>(null);
+    const [isLoadingPositioning, setIsLoadingPositioning] = useState(false);
     const pendingRetryRef = useRef<null | (() => void)>(null);
     const lastInteractionRefreshRef = useRef(0);
     const newsCardRef = useRef<HTMLDivElement | null>(null);
@@ -715,6 +884,10 @@ export default function CryptoAnalysisPage() {
             : {};
         const code = String(payload.error || "");
         const tier = String(payload.tier || membership?.tier || "visitor");
+
+        if (code === "Unsupported range" || code === "Unsupported interval") {
+            return;
+        }
 
         if (code === "general_membership_required") {
             openAccessGate(
@@ -830,15 +1003,19 @@ export default function CryptoAnalysisPage() {
     const loadHistory = useCallback(async (symbol: string, nextRange: RangeKey) => {
         const safeSymbol = normalizeSymbol(symbol, quotePreference);
         if (!safeSymbol) return;
-        const rangeConfig = RANGE_MAP[nextRange];
+        const rangeConfig = resolveHistoryConfigForTier(
+            RANGE_MAP[nextRange],
+            membership?.entitlements?.historyRangeLimit
+        );
         setIsLoadingHistory(true);
         try {
             const data = await apiGet<HistoryResponse>(
                 apiUrl(`/api/crypto/history?symbol=${encodeURIComponent(safeSymbol)}&range=${rangeConfig.range}&interval=${rangeConfig.interval}`)
             );
-            setHistoryPoints(Array.isArray(data.history?.points) ? data.history.points : []);
+            const rawPoints = Array.isArray(data.history?.points) ? data.history.points : [];
+            setHistoryPoints(normalizeHistoryForRange(rawPoints, nextRange));
             setIndicators(data.history?.indicators || null);
-            if (!data.history?.points?.length) {
+            if (!rawPoints.length) {
                 toast.warning(
                     isEnglish ? "No chart data" : "沒有走勢資料",
                     isEnglish ? "Yahoo Finance returned no valid OHLCV points for this symbol/range." : "Yahoo Finance 沒有回傳這個標的/區間可用的 OHLCV 資料。"
@@ -859,7 +1036,7 @@ export default function CryptoAnalysisPage() {
         } finally {
             setIsLoadingHistory(false);
         }
-    }, [handleApiAccessError, isEnglish, quotePreference, toast]);
+    }, [handleApiAccessError, isEnglish, membership?.entitlements?.historyRangeLimit, quotePreference, toast]);
 
     const refreshDashboard = useCallback(async () => {
         await Promise.all([
@@ -989,6 +1166,32 @@ export default function CryptoAnalysisPage() {
     useEffect(() => {
         if (!isRuntimeActive) return;
         if (!isSponsorTier) return;
+        if (!selectedQuote?.yahooSymbol) return;
+        let cancelled = false;
+        const run = async () => {
+            setIsLoadingPositioning(true);
+            try {
+                const data = await apiGet<PositioningResponse>(
+                    apiUrl(`/api/crypto/positioning?symbol=${encodeURIComponent(selectedQuote.yahooSymbol)}&source=${encodeURIComponent(positioningSource)}&timeframe=${encodeURIComponent(positioningPeriod)}`)
+                );
+                if (cancelled) return;
+                setPositioningData(data.positioning || null);
+            } catch {
+                if (cancelled) return;
+                setPositioningData(null);
+            } finally {
+                if (!cancelled) setIsLoadingPositioning(false);
+            }
+        };
+        run();
+        return () => {
+            cancelled = true;
+        };
+    }, [isRuntimeActive, isSponsorTier, positioningPeriod, positioningSource, selectedQuote?.yahooSymbol]);
+
+    useEffect(() => {
+        if (!isRuntimeActive) return;
+        if (!isSponsorTier) return;
         if (!selectedQuote?.yahooSymbol || !isNewsCardVisible) return;
         const timer = window.setInterval(() => {
             loadNews(selectedQuote);
@@ -1014,6 +1217,117 @@ export default function CryptoAnalysisPage() {
     }, []);
 
     const chartData = useMemo(() => buildChartData(historyPoints, range, localeCode), [historyPoints, localeCode, range]);
+    const chartWindowSize = CHART_WINDOW_SIZE[range];
+    const chartPanStep = CHART_PAN_STEP[range];
+    const visibleChartData = useMemo(() => {
+        if (chartData.length <= chartWindowSize) return chartData;
+        const maxEnd = chartData.length;
+        const minEnd = chartWindowSize;
+        const preferredEnd = chartWindowEnd ?? maxEnd;
+        const end = Math.max(minEnd, Math.min(maxEnd, preferredEnd));
+        const start = Math.max(0, end - chartWindowSize);
+        return chartData.slice(start, end);
+    }, [chartData, chartWindowEnd, chartWindowSize]);
+    const positioningChartData = useMemo(() => {
+        const points = Array.isArray(positioningData?.points) ? positioningData.points : [];
+        return points.map((point) => {
+            const date = new Date(point.time);
+            const label = Number.isFinite(date.getTime())
+                ? (positioningPeriod === "1d"
+                    ? new Intl.DateTimeFormat(localeCode, { month: "2-digit", day: "2-digit" }).format(date)
+                    : new Intl.DateTimeFormat(localeCode, { hour: "2-digit", minute: "2-digit" }).format(date))
+                : "--";
+            const longRatio = toFiniteNumber(point.longRatio);
+            const shortRatio = toFiniteNumber(point.shortRatio);
+            const total = longRatio + shortRatio;
+            const longPct = total > 0 ? (longRatio / total) * 100 : 0;
+            const shortPct = total > 0 ? (shortRatio / total) * 100 : 0;
+            return {
+                ...point,
+                label,
+                longPct,
+                shortPct,
+                ratioValue: toFiniteNumber(point.value),
+            };
+        });
+    }, [localeCode, positioningData, positioningPeriod]);
+    const latestPositioning = useMemo(() => {
+        const points = positioningChartData;
+        return points.length ? points[points.length - 1] : null;
+    }, [positioningChartData]);
+    const positioningInferenceData = useMemo(() => {
+        return positioningChartData.map((point, index, all) => {
+            const prev = index > 0 ? all[index - 1] : null;
+            const ratioNow = toFiniteNumber(point.ratioValue);
+            const ratioPrev = prev ? toFiniteNumber(prev.ratioValue) : ratioNow;
+            const deltaRatio = ratioNow - ratioPrev;
+            const momentum = Math.max(-1, Math.min(1, deltaRatio * 8));
+            const longOpen = Math.max(0, 50 + momentum * 28);
+            const shortClose = Math.max(0, 50 + momentum * 12);
+            const shortOpen = Math.max(0, 50 - momentum * 28);
+            const longClose = Math.max(0, 50 - momentum * 12);
+            const rawTotal = longOpen + shortClose + shortOpen + longClose;
+            const scale = rawTotal > 0 ? 100 / rawTotal : 0;
+            const confidence = Math.min(100, Math.max(20, Math.abs(deltaRatio) * 160 + 25));
+            return {
+                ...point,
+                longOpenPct: longOpen * scale,
+                shortClosePct: shortClose * scale,
+                shortOpenPct: shortOpen * scale,
+                longClosePct: longClose * scale,
+                confidence,
+            };
+        });
+    }, [positioningChartData]);
+    const latestInference = useMemo(() => {
+        const points = positioningInferenceData;
+        return points.length ? points[points.length - 1] : null;
+    }, [positioningInferenceData]);
+    const positioningMetaText = (() => {
+        const source = (positioningData?.source || positioningSource).toUpperCase();
+        const period = positioningPeriod;
+        const updated = latestPositioning?.time
+            ? getFreshnessLabel(latestPositioning.time, localeCode)
+            : "--";
+        const modeLabel = positioningViewMode === "ratio"
+            ? (isEnglish ? "Long/Short Ratio" : "多空比")
+            : (isEnglish ? "Four-color inference" : "四色推論");
+        if (isEnglish) return `Source: ${source} · Period: ${period} · Mode: ${modeLabel} · Updated: ${updated}`;
+        return `來源：${source} · 週期：${period} · 模式：${modeLabel} · 更新：${updated}`;
+    })();
+    const canPanChartLeft = useMemo(() => {
+        if (chartData.length <= chartWindowSize) return false;
+        const end = Math.max(chartWindowSize, Math.min(chartData.length, chartWindowEnd ?? chartData.length));
+        return end - chartWindowSize > 0;
+    }, [chartData.length, chartWindowEnd, chartWindowSize]);
+    const canPanChartRight = useMemo(() => {
+        if (chartData.length <= chartWindowSize) return false;
+        const end = Math.max(chartWindowSize, Math.min(chartData.length, chartWindowEnd ?? chartData.length));
+        return end < chartData.length;
+    }, [chartData.length, chartWindowEnd, chartWindowSize]);
+
+    useEffect(() => {
+        // eslint-disable-next-line react-hooks/set-state-in-effect
+        setChartWindowEnd(null);
+    }, [range, selectedSymbol, chartData.length]);
+
+    const panChartLeft = useCallback(() => {
+        setChartWindowEnd((prev) => {
+            const maxEnd = chartData.length;
+            const minEnd = chartWindowSize;
+            const currentEnd = prev ?? maxEnd;
+            return Math.max(minEnd, currentEnd - chartPanStep);
+        });
+    }, [chartData.length, chartPanStep, chartWindowSize]);
+
+    const panChartRight = useCallback(() => {
+        setChartWindowEnd((prev) => {
+            const maxEnd = chartData.length;
+            const minEnd = chartWindowSize;
+            const currentEnd = prev ?? maxEnd;
+            return Math.min(maxEnd, Math.max(minEnd, currentEnd + chartPanStep));
+        });
+    }, [chartData.length, chartPanStep, chartWindowSize]);
 
     const marketBreadth = useMemo(() => {
         const source = visibleQuotes.length ? visibleQuotes : quotes;
@@ -1034,9 +1348,30 @@ export default function CryptoAnalysisPage() {
         news,
         watchlist: visibleQuotes,
         breadth: marketBreadth,
+        positioning: isSponsorTier
+            ? {
+                source: positioningData?.source || positioningSource,
+                period: positioningPeriod,
+                pair: positioningData?.pair || "",
+                latest: latestPositioning
+                    ? {
+                        ratio: toFiniteNumber(latestPositioning.ratioValue),
+                        longPct: Number.isFinite(Number(latestPositioning.longPct)) ? toFiniteNumber(latestPositioning.longPct) : null,
+                        shortPct: Number.isFinite(Number(latestPositioning.shortPct)) ? toFiniteNumber(latestPositioning.shortPct) : null,
+                        time: String(latestPositioning.time || ""),
+                    }
+                    : null,
+                series: positioningChartData.slice(-24).map((point) => ({
+                    time: String(point.time || ""),
+                    ratio: toFiniteNumber(point.ratioValue),
+                    longPct: toFiniteNumber(point.longPct),
+                    shortPct: toFiniteNumber(point.shortPct),
+                })),
+            }
+            : undefined,
         quoteErrors,
         generatedAt: new Date().toISOString(),
-    }), [indicators, marketBreadth, news, quoteErrors, range, selectedMarket, selectedQuote, visibleQuotes]);
+    }), [indicators, isSponsorTier, latestPositioning, marketBreadth, news, positioningChartData, positioningData?.pair, positioningData?.source, positioningPeriod, positioningSource, quoteErrors, range, selectedMarket, selectedQuote, visibleQuotes]);
 
     useEffect(() => {
         if (!isRuntimeActive) return;
@@ -1158,16 +1493,19 @@ export default function CryptoAnalysisPage() {
         setIsLoginLoading(true);
         try {
             await apiPost(apiUrl("/api/crypto/membership/login"), {
-                email: loginEmail.trim(),
+                email: loginEmail.trim().toLowerCase(),
                 password: loginPassword,
             });
             setLoginPassword("");
             await loadMembership();
             setAccessGate(null);
+            setIsAccountModalOpen(false);
             toast.success(isEnglish ? "Membership linked" : "會員已連結", isEnglish ? "Crypto permissions updated." : "Crypto 權限已更新。");
         } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            toast.error(isEnglish ? "Login failed" : "登入失敗", message);
+            toast.error(
+                isEnglish ? "Login failed" : "登入失敗",
+                formatMembershipAuthError(error, isEnglish, "login")
+            );
         } finally {
             setIsLoginLoading(false);
         }
@@ -1178,7 +1516,7 @@ export default function CryptoAnalysisPage() {
         setIsLoginLoading(true);
         try {
             await apiPost(apiUrl("/api/crypto/membership/register"), {
-                email: loginEmail.trim(),
+                email: loginEmail.trim().toLowerCase(),
                 password: loginPassword,
             });
             setLoginPassword("");
@@ -1187,8 +1525,10 @@ export default function CryptoAnalysisPage() {
             setIsAccountModalOpen(false);
             toast.success(isEnglish ? "Registration complete" : "註冊完成", isEnglish ? "Membership account is ready." : "會員帳號已建立並可使用。");
         } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            toast.error(isEnglish ? "Registration failed" : "註冊失敗", message);
+            toast.error(
+                isEnglish ? "Registration failed" : "註冊失敗",
+                formatMembershipAuthError(error, isEnglish, "register")
+            );
         } finally {
             setIsLoginLoading(false);
         }
@@ -1202,6 +1542,29 @@ export default function CryptoAnalysisPage() {
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             toast.error(isEnglish ? "Logout failed" : "登出失敗", message);
+        }
+    };
+
+    const handleMembershipForgotPassword = async () => {
+        const email = loginEmail.trim().toLowerCase();
+        if (!email) {
+            toast.warning(isEnglish ? "Email required" : "請先輸入 Email");
+            return;
+        }
+        setIsLoginLoading(true);
+        try {
+            await apiPost(apiUrl("/api/crypto/membership/forgot-password"), { email });
+            toast.success(
+                isEnglish ? "Reset email sent" : "重設信已送出",
+                isEnglish ? "Please check your inbox." : "請到信箱查看重設連結。"
+            );
+        } catch (error) {
+            toast.error(
+                isEnglish ? "Reset failed" : "重設失敗",
+                formatPasswordResetError(error, isEnglish)
+            );
+        } finally {
+            setIsLoginLoading(false);
         }
     };
 
@@ -1637,9 +2000,31 @@ export default function CryptoAnalysisPage() {
                                             range === option ? "bg-secondary text-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground"
                                         )}
                                     >
-                                        {option}
+                                        {RANGE_MAP[option].label}
                                     </button>
                                 ))}
+                            </div>
+                            <div className="flex items-center gap-1">
+                                <Button
+                                    size="icon"
+                                    variant="outline"
+                                    className="h-8 w-8"
+                                    onClick={panChartLeft}
+                                    disabled={!canPanChartLeft}
+                                    title={isEnglish ? "Move left" : "往左移動"}
+                                >
+                                    <ChevronLeft className="h-4 w-4" />
+                                </Button>
+                                <Button
+                                    size="icon"
+                                    variant="outline"
+                                    className="h-8 w-8"
+                                    onClick={panChartRight}
+                                    disabled={!canPanChartRight}
+                                    title={isEnglish ? "Move right" : "往右移動"}
+                                >
+                                    <ChevronRight className="h-4 w-4" />
+                                </Button>
                             </div>
                         </CardHeader>
                         <CardContent className="space-y-5">
@@ -1651,7 +2036,7 @@ export default function CryptoAnalysisPage() {
                                     </div>
                                 ) : (
                                     <CandlestickChart
-                                        data={chartData}
+                                        data={visibleChartData}
                                         currency={selectedQuote?.currency || ""}
                                         localeCode={localeCode}
                                         isEnglish={isEnglish}
@@ -1727,52 +2112,207 @@ export default function CryptoAnalysisPage() {
                     <div className="space-y-4">
                     <Card className="rounded-lg border-border/80">
                         <CardHeader className="pb-4">
-                            <CardDescription>{isEnglish ? "Volume Shape" : "量能輪廓"}</CardDescription>
-                            <CardTitle className="flex items-center gap-2 text-xl">
-                                <BarChart3 className="h-5 w-5 text-primary" />
-                                {isEnglish ? "Trading Activity" : "交易活躍度"}
-                            </CardTitle>
+                            <div className="flex items-center justify-between gap-3">
+                                <div>
+                                    <CardDescription>{isEnglish ? "Public Exchange Data" : "交易所公開資料"}</CardDescription>
+                                    <CardTitle className="flex items-center gap-2 text-xl">
+                                        <BarChart3 className="h-5 w-5 text-primary" />
+                                        {positioningViewMode === "ratio"
+                                            ? (isEnglish ? "Long/Short Ratio" : "多空比")
+                                            : (isEnglish ? "Long/Short Inference" : "多空推論")}
+                                    </CardTitle>
+                                    <div className="mt-1 text-xs text-muted-foreground">{positioningMetaText}</div>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                    <select
+                                        value={positioningSource}
+                                        onChange={(event) => setPositioningSource(event.target.value as "binance" | "bybit" | "okx")}
+                                        disabled={!isSponsorTier}
+                                        className="h-9 rounded-md border border-border bg-background px-2 text-xs"
+                                    >
+                                        <option value="binance">Binance</option>
+                                        <option value="bybit">Bybit</option>
+                                        <option value="okx">OKX</option>
+                                    </select>
+                                    <select
+                                        value={positioningPeriod}
+                                        onChange={(event) => setPositioningPeriod(event.target.value as PositioningPeriod)}
+                                        disabled={!isSponsorTier}
+                                        className="h-9 rounded-md border border-border bg-background px-2 text-xs"
+                                    >
+                                        <option value="5m">5m</option>
+                                        <option value="15m">15m</option>
+                                        <option value="1h">1h</option>
+                                        <option value="1d">1d</option>
+                                    </select>
+                                    <select
+                                        value={positioningViewMode}
+                                        onChange={(event) => setPositioningViewMode(event.target.value as PositioningViewMode)}
+                                        disabled={!isSponsorTier}
+                                        className="h-9 rounded-md border border-border bg-background px-2 text-xs"
+                                    >
+                                        <option value="ratio">{isEnglish ? "Ratio Only" : "僅多空比"}</option>
+                                        <option value="inference">{isEnglish ? "4-Color Inference" : "四色推論"}</option>
+                                    </select>
+                                </div>
+                            </div>
                         </CardHeader>
                         <CardContent>
-                            <div className="h-[280px] min-h-[280px] min-w-0">
-                                {(
-                                    <ResponsiveContainer width="100%" height="100%" minWidth={1} minHeight={1}>
-                                        <BarChart data={chartData.slice(-24)} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
-                                            <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
-                                            <XAxis dataKey="label" tickLine={false} axisLine={false} minTickGap={18} className="text-xs" />
-                                            <YAxis tickLine={false} axisLine={false} width={46} className="text-xs" tickFormatter={(value) => formatCompact(Number(value), localeCode)} />
-                                            <Tooltip
-                                                contentStyle={{
-                                                    backgroundColor: "var(--color-popover)",
-                                                    borderColor: "var(--color-border)",
-                                                    borderRadius: 8,
-                                                    boxShadow: "0 10px 24px rgba(0,0,0,0.22)",
-                                                }}
-                                                formatter={(value) => [formatCompact(toFiniteNumber(value), localeCode), isEnglish ? "Volume" : "成交量"]}
-                                            />
-                                            <Bar dataKey="volume" fill="#f59e0b" radius={[6, 6, 0, 0]} />
-                                        </BarChart>
-                                    </ResponsiveContainer>
-                                )}
-                            </div>
-                            <div className="mt-4 grid grid-cols-2 gap-3">
-                                {[
-                                    { label: isEnglish ? "Open" : "開盤", value: formatNumber(selectedQuote?.open, localeCode) },
-                                    { label: isEnglish ? "Prev Close" : "昨收", value: formatNumber(selectedQuote?.previousClose, localeCode) },
-                                    {
-                                        label: isEnglish ? "Price Change" : "價格變動",
-                                        value: `${selectedQuote?.currency || ""} ${formatSignedNumber(selectedQuote?.change, localeCode)}`.trim(),
-                                        tone: getQuoteTone(selectedQuote?.change),
-                                    },
-                                    { label: isEnglish ? "Volume" : "成交量", value: formatCompact(selectedQuote?.volume, localeCode) },
-                                    { label: isEnglish ? "Mkt Cap" : "市值", value: formatCompact(selectedQuote?.marketCap, localeCode) },
-                                ].map((item) => (
-                                    <div key={item.label} className="rounded-lg border border-border bg-background p-3">
-                                        <div className="text-xs text-muted-foreground">{item.label}</div>
-                                        <div className={cn("mt-1 text-base font-semibold", item.tone)}>{item.value}</div>
+                            {isSponsorTier ? (
+                                <>
+                                    {positioningViewMode === "inference" && (
+                                        <div className="mb-3 rounded-lg border border-amber-400/40 bg-amber-400/10 p-3 text-[11px] leading-5 text-amber-100">
+                                            {isEnglish
+                                                ? "Note: The four-color view is an inference from public long/short ratio momentum, not direct exchange truth for long-open/long-close/short-open/short-close."
+                                                : "註：四色圖為依公開多空比動能推論，非交易所直接回傳的「多開/多平/空開/空平」真值。"}
+                                        </div>
+                                    )}
+                                    <div className="h-[280px] min-h-[280px] min-w-0">
+                                        {isLoadingPositioning ? (
+                                            <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+                                                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                                {isEnglish ? "Loading long/short ratio..." : "讀取多空比中..."}
+                                            </div>
+                                        ) : positioningViewMode === "ratio" && positioningChartData.length ? (
+                                            <ResponsiveContainer width="100%" height="100%" minWidth={1} minHeight={1}>
+                                                <ComposedChart data={positioningChartData.slice(-24)} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+                                                    <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
+                                                    <XAxis dataKey="label" tickLine={false} axisLine={false} minTickGap={18} className="text-xs" />
+                                                    <YAxis yAxisId="pct" tickLine={false} axisLine={false} width={42} className="text-xs" domain={[0, 100]} tickFormatter={(value) => `${toFiniteNumber(value).toFixed(0)}%`} />
+                                                    <YAxis yAxisId="ratio" orientation="right" tickLine={false} axisLine={false} width={48} className="text-xs" tickFormatter={(value) => toFiniteNumber(value).toFixed(2)} />
+                                                    <Tooltip
+                                                        contentStyle={{
+                                                            backgroundColor: "var(--color-popover)",
+                                                            borderColor: "var(--color-border)",
+                                                            borderRadius: 8,
+                                                            boxShadow: "0 10px 24px rgba(0,0,0,0.22)",
+                                                        }}
+                                                        formatter={(value, name) => {
+                                                            if (name === "longPct") return [`${toFiniteNumber(value).toFixed(1)}%`, isEnglish ? "Long Account %" : "多方帳戶比例"];
+                                                            if (name === "shortPct") return [`${toFiniteNumber(value).toFixed(1)}%`, isEnglish ? "Short Account %" : "空方帳戶比例"];
+                                                            return [toFiniteNumber(value).toFixed(3), isEnglish ? "Long/Short ratio" : "多空比"];
+                                                        }}
+                                                    />
+                                                    <Legend
+                                                        wrapperStyle={{ fontSize: 11 }}
+                                                        formatter={(value) => {
+                                                            if (value === "longPct") return isEnglish ? "Long Account %" : "多方帳戶比例";
+                                                            if (value === "shortPct") return isEnglish ? "Short Account %" : "空方帳戶比例";
+                                                            return isEnglish ? "Long/Short Ratio" : "多空比";
+                                                        }}
+                                                    />
+                                                    <Bar yAxisId="pct" dataKey="longPct" stackId="account" fill="#34d399" radius={[0, 0, 0, 0]} />
+                                                    <Bar yAxisId="pct" dataKey="shortPct" stackId="account" fill="#fb7185" radius={[4, 4, 0, 0]} />
+                                                    <Line yAxisId="ratio" type="monotone" dataKey="ratioValue" stroke="#e5e7eb" dot={{ r: 2 }} strokeWidth={2} />
+                                                </ComposedChart>
+                                            </ResponsiveContainer>
+                                        ) : positioningViewMode === "inference" && positioningInferenceData.length ? (
+                                            <ResponsiveContainer width="100%" height="100%" minWidth={1} minHeight={1}>
+                                                <ComposedChart data={positioningInferenceData.slice(-24)} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+                                                    <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
+                                                    <XAxis dataKey="label" tickLine={false} axisLine={false} minTickGap={18} className="text-xs" />
+                                                    <YAxis yAxisId="pct" tickLine={false} axisLine={false} width={42} className="text-xs" domain={[0, 100]} tickFormatter={(value) => `${toFiniteNumber(value).toFixed(0)}%`} />
+                                                    <YAxis yAxisId="confidence" orientation="right" tickLine={false} axisLine={false} width={52} className="text-xs" domain={[0, 100]} tickFormatter={(value) => `${toFiniteNumber(value).toFixed(0)}%`} />
+                                                    <Tooltip
+                                                        contentStyle={{
+                                                            backgroundColor: "var(--color-popover)",
+                                                            borderColor: "var(--color-border)",
+                                                            borderRadius: 8,
+                                                            boxShadow: "0 10px 24px rgba(0,0,0,0.22)",
+                                                        }}
+                                                        formatter={(value, name) => {
+                                                            if (name === "longOpenPct") return [`${toFiniteNumber(value).toFixed(1)}%`, isEnglish ? "Long Open (inferred)" : "多單建倉（推論）"];
+                                                            if (name === "shortClosePct") return [`${toFiniteNumber(value).toFixed(1)}%`, isEnglish ? "Short Close (inferred)" : "空單平倉（推論）"];
+                                                            if (name === "shortOpenPct") return [`${toFiniteNumber(value).toFixed(1)}%`, isEnglish ? "Short Open (inferred)" : "空單建倉（推論）"];
+                                                            if (name === "longClosePct") return [`${toFiniteNumber(value).toFixed(1)}%`, isEnglish ? "Long Close (inferred)" : "多單平倉（推論）"];
+                                                            return [`${toFiniteNumber(value).toFixed(0)}%`, isEnglish ? "Inference confidence" : "推論信心"];
+                                                        }}
+                                                    />
+                                                    <Legend wrapperStyle={{ fontSize: 11 }} />
+                                                    <Bar yAxisId="pct" dataKey="longOpenPct" stackId="inference" name={isEnglish ? "Long Open (inferred)" : "多單建倉（推論）"} fill="#22c55e" />
+                                                    <Bar yAxisId="pct" dataKey="shortClosePct" stackId="inference" name={isEnglish ? "Short Close (inferred)" : "空單平倉（推論）"} fill="#86efac" />
+                                                    <Bar yAxisId="pct" dataKey="shortOpenPct" stackId="inference" name={isEnglish ? "Short Open (inferred)" : "空單建倉（推論）"} fill="#f97316" />
+                                                    <Bar yAxisId="pct" dataKey="longClosePct" stackId="inference" name={isEnglish ? "Long Close (inferred)" : "多單平倉（推論）"} fill="#fb7185" />
+                                                    <Line yAxisId="confidence" type="monotone" dataKey="confidence" name={isEnglish ? "Confidence" : "信心度"} stroke="#e5e7eb" dot={{ r: 2 }} strokeWidth={2} />
+                                                </ComposedChart>
+                                            </ResponsiveContainer>
+                                        ) : (
+                                            <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+                                                {isEnglish ? "No public ratio data for this source/symbol." : "此來源/標的目前沒有可用多空比資料。"}
+                                            </div>
+                                        )}
                                     </div>
-                                ))}
-                            </div>
+                                    <div className="mt-4 grid grid-cols-2 gap-3">
+                                        {(positioningViewMode === "ratio" ? [
+                                            { label: isEnglish ? "Data Source" : "資料來源", value: (positioningData?.source || positioningSource).toUpperCase() },
+                                            { label: isEnglish ? "Pair" : "交易對", value: positioningData?.pair || "--" },
+                                            {
+                                                label: isEnglish ? "Latest Ratio" : "最新多空比",
+                                                value: latestPositioning ? toFiniteNumber(latestPositioning.value).toFixed(3) : "--",
+                                            },
+                                            { label: isEnglish ? "Long Ratio" : "多方比例", value: latestPositioning?.longRatio ? `${(toFiniteNumber(latestPositioning.longRatio) * 100).toFixed(1)}%` : "--" },
+                                            { label: isEnglish ? "Short Ratio" : "空方比例", value: latestPositioning?.shortRatio ? `${(toFiniteNumber(latestPositioning.shortRatio) * 100).toFixed(1)}%` : "--" },
+                                        ] : [
+                                            { label: isEnglish ? "Data Source" : "資料來源", value: (positioningData?.source || positioningSource).toUpperCase() },
+                                            { label: isEnglish ? "Pair" : "交易對", value: positioningData?.pair || "--" },
+                                            { label: isEnglish ? "Signal Confidence" : "推論信心度", value: latestInference ? `${toFiniteNumber(latestInference.confidence).toFixed(0)}%` : "--" },
+                                            { label: isEnglish ? "Long Open (inf.)" : "多單建倉（推論）", value: latestInference ? `${toFiniteNumber(latestInference.longOpenPct).toFixed(1)}%` : "--" },
+                                            { label: isEnglish ? "Short Open (inf.)" : "空單建倉（推論）", value: latestInference ? `${toFiniteNumber(latestInference.shortOpenPct).toFixed(1)}%` : "--" },
+                                        ]).map((item) => (
+                                            <div key={item.label} className="rounded-lg border border-border bg-background p-3">
+                                                <div className="text-xs text-muted-foreground">{item.label}</div>
+                                                <div className="mt-1 text-base font-semibold">{item.value}</div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </>
+                            ) : (
+                                <>
+                                    <div className="h-[280px] min-h-[280px] min-w-0 rounded-lg border border-border/40 bg-muted/30 p-4 opacity-70">
+                                        <div className="grid h-full grid-cols-12 items-end gap-2">
+                                            {Array.from({ length: 24 }).map((_, index) => (
+                                                <div key={`locked-positioning-${index}`} className="w-full rounded-sm bg-muted-foreground/25" style={{ height: `${30 + ((index * 17) % 55)}%` }} />
+                                            ))}
+                                        </div>
+                                    </div>
+                                    <div className="mt-4 grid grid-cols-2 gap-3">
+                                        {[
+                                            isEnglish ? "Data Source" : "資料來源",
+                                            isEnglish ? "Pair" : "交易對",
+                                            isEnglish ? "Latest Ratio" : "最新多空比",
+                                            isEnglish ? "Long Ratio" : "多方比例",
+                                        ].map((label) => (
+                                            <div key={label} className="rounded-lg border border-border/40 bg-muted/40 p-3 opacity-65">
+                                                <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
+                                                    <span>{label}</span>
+                                                    <span className="rounded-full border border-amber-400/60 bg-amber-400/20 px-2 py-0.5 text-[10px] text-amber-200">
+                                                        {isEnglish ? "Sponsor Unlock" : "贊助解鎖"}
+                                                    </span>
+                                                </div>
+                                                <div className="mt-2 h-4 w-24 rounded bg-muted-foreground/20" />
+                                            </div>
+                                        ))}
+                                    </div>
+                                    <div className="mt-4 rounded-lg border border-amber-400/40 bg-amber-400/10 p-3 text-sm text-amber-200">
+                                        <div>{isEnglish ? "Long/Short Ratio is Sponsor-only (USD $5+)." : "多空比為贊助會員專屬（至少 5 美金）。"}</div>
+                                        <div className="mt-1 text-xs text-amber-100/90">
+                                            {isEnglish ? "Upgrade to unlock live positioning data by exchange and period." : "升級後可解鎖依交易所與週期切換的即時多空比資料。"}
+                                        </div>
+                                        <div className="mt-3">
+                                            <Button
+                                                size="sm"
+                                                onClick={() => setAccessGate({
+                                                    title: isEnglish ? "Long/Short Ratio locked" : "多空比功能尚未解鎖",
+                                                    body: isEnglish ? "Sponsor membership (USD $5+) unlocks this module and full crypto capabilities." : "贊助會員（至少 5 美金）可解鎖此模組與完整幣市功能。",
+                                                    step: 1,
+                                                })}
+                                            >
+                                                {isEnglish ? "Upgrade to Sponsor (USD $5+)" : "升級贊助會員（5 美金起）"}
+                                            </Button>
+                                        </div>
+                                    </div>
+                                </>
+                            )}
                         </CardContent>
                     </Card>
 
@@ -2073,6 +2613,18 @@ export default function CryptoAnalysisPage() {
                                 placeholder={isEnglish ? "Password" : "密碼"}
                                 className="h-10 w-full rounded-md border border-border bg-background px-3 text-sm"
                             />
+                            {authMode === "login" && (
+                                <div className="flex justify-end">
+                                    <button
+                                        type="button"
+                                        onClick={handleMembershipForgotPassword}
+                                        disabled={isLoginLoading}
+                                        className="text-xs font-medium text-muted-foreground underline-offset-4 hover:text-foreground hover:underline disabled:opacity-50"
+                                    >
+                                        {isEnglish ? "Forgot password?" : "忘記密碼？"}
+                                    </button>
+                                </div>
+                            )}
                         </div>
                         <div className="flex flex-wrap gap-2">
                             {authMode === "login" ? (

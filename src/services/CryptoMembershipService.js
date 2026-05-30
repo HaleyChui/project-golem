@@ -38,7 +38,7 @@ const ENTITLEMENTS = {
     },
 };
 
-const RANGE_ORDER = ['1d', '5d', '1mo', '3mo', '6mo', '1y', '2y'];
+const RANGE_ORDER = ['1d', '2d', '5d', '1mo', '3mo', '6mo', '1y', '2y'];
 
 function ensureDir(filePath) {
     const dir = path.dirname(filePath);
@@ -109,12 +109,13 @@ async function fetchMembershipByUid(uid, idToken) {
         headers: { Authorization: `Bearer ${idToken}` },
     });
     if (!response.ok) {
-        if (response.status === 404) return 'visitor';
+        // Crypto policy: authenticated users without a profile doc are treated as General.
+        if (response.status === 404) return 'general';
         throw new Error(`membership_fetch_failed_${response.status}`);
     }
     const data = await response.json();
     const tierRaw = extractFirestoreStringField(data.fields || {}, 'membershipTier');
-    return sanitizeTier(tierRaw || 'visitor');
+    return sanitizeTier(tierRaw || 'general');
 }
 
 async function signInWithEmailPassword(email, password) {
@@ -143,6 +144,21 @@ async function registerWithEmailPassword(email, password) {
     if (!response.ok || !payload?.idToken) {
         const code = String(payload?.error?.message || 'REGISTER_FAILED').toUpperCase();
         throw new Error(`firebase_register_failed:${code}`);
+    }
+    return payload;
+}
+
+async function sendPasswordReset(email) {
+    const endpoint = `https://identitytoolkit.googleapis.com/v1/accounts:sendOobCode?key=${encodeURIComponent(FIREBASE_WEB_API_KEY)}`;
+    const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ requestType: 'PASSWORD_RESET', email }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+        const code = String(payload?.error?.message || 'PASSWORD_RESET_FAILED').toUpperCase();
+        throw new Error(`firebase_password_reset_failed:${code}`);
     }
     return payload;
 }
@@ -279,6 +295,7 @@ module.exports = {
     resolveMembership,
     signInWithEmailPassword,
     registerWithEmailPassword,
+    sendPasswordReset,
     refreshWithRefreshToken,
     verifyFirebaseIdToken,
     fetchMembershipByUid,
