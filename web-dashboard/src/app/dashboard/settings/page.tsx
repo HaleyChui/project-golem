@@ -19,6 +19,7 @@ import { cn } from "@/lib/utils";
 import { ConfirmModal } from "@/components/ConfirmModal";
 import { useToast } from "@/components/ui/toast-provider";
 import { apiGet, apiPost, apiPostWrite } from "@/lib/api-client";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import EngineTab from "./components/tabs/EngineTab";
 import MessagingTab from "./components/tabs/MessagingTab";
 import TgAdvancedTab from "./components/tabs/TgAdvancedTab";
@@ -30,6 +31,12 @@ import SystemUpdateSection from "./components/SystemUpdateSection";
 import UrlsTab from "./tabs/UrlsTab";
 import { ConfigData, LogInfo, SystemStatus } from "./types";
 import { useI18n } from "@/components/I18nProvider";
+import {
+    CRYPTO_FEATURE_ENABLED_STORAGE_KEY,
+    STOCKS_FEATURE_ENABLED_STORAGE_KEY,
+    readFeatureEnabled,
+    writeFeatureEnabled
+} from "@/lib/dashboard-feature-flags";
 
 type StatusMessage = {
     type: "success" | "error" | "warning";
@@ -54,7 +61,7 @@ const TAB_ITEMS = [
 
 export default function SettingsPage() {
     const toast = useToast();
-    const { t } = useI18n();
+    const { t, locale } = useI18n();
     const [config, setConfig] = useState<ConfigData>({ env: {}, golems: [] });
     const [originalConfig, setOriginalConfig] = useState<ConfigData>({ env: {}, golems: [] });
     const [systemStatus, setSystemStatus] = useState<SystemStatus | null>(null);
@@ -64,14 +71,10 @@ export default function SettingsPage() {
     const [logInfo, setLogInfo] = useState<LogInfo | null>(null);
     const [isRestartConfirmOpen, setIsRestartConfirmOpen] = useState(false);
     const [activeTab, setActiveTab] = useState("overview");
+    const [stocksFeatureEnabled, setStocksFeatureEnabled] = useState(true);
+    const [cryptoFeatureEnabled, setCryptoFeatureEnabled] = useState(true);
 
-    useEffect(() => {
-        fetchConfig();
-        fetchStatus();
-        fetchLogInfo();
-    }, []);
-
-    const fetchConfig = async () => {
+    async function fetchConfig() {
         setIsLoading(true);
         setStatusMessage(null);
         try {
@@ -83,18 +86,18 @@ export default function SettingsPage() {
         } finally {
             setIsLoading(false);
         }
-    };
+    }
 
-    const fetchStatus = async () => {
+    async function fetchStatus() {
         try {
             const data = await apiGet<SystemStatus>("/api/system/status");
             setSystemStatus(data);
         } catch (error) {
             console.error("Failed to fetch system status:", error);
         }
-    };
+    }
 
-    const fetchLogInfo = async () => {
+    async function fetchLogInfo() {
         try {
             const data = await apiGet<{ success?: boolean; size?: string; bytes?: number }>("/api/system/log-info");
             if (data.success === true && data.size && typeof data.bytes === "number") {
@@ -103,7 +106,15 @@ export default function SettingsPage() {
         } catch (error) {
             console.error("Failed to fetch log info:", error);
         }
-    };
+    }
+
+    useEffect(() => {
+        fetchConfig();
+        fetchStatus();
+        fetchLogInfo();
+        setStocksFeatureEnabled(readFeatureEnabled(STOCKS_FEATURE_ENABLED_STORAGE_KEY, true));
+        setCryptoFeatureEnabled(readFeatureEnabled(CRYPTO_FEATURE_ENABLED_STORAGE_KEY, true));
+    }, []);
 
     const handleChangeEnv = (key: string, value: string) => {
         setConfig((prev) => ({
@@ -296,6 +307,50 @@ export default function SettingsPage() {
 
                 {activeTab === "overview" && (
                     <div className="animate-in fade-in slide-in-from-bottom-4 duration-500 space-y-6">
+                        <Card className="border border-border/70">
+                            <CardHeader>
+                                <CardTitle>{locale === "en" ? "Dashboard Performance Controls" : "看板效能控制"}</CardTitle>
+                                <CardDescription>
+                                    {locale === "en"
+                                        ? "Disable heavy dashboards when you do not need them. Hidden sidebar items also pause auto-refresh."
+                                        : "不需要時可停用高資源看板。若側欄隱藏該項目，也會自動暫停背景刷新。"}
+                                </CardDescription>
+                            </CardHeader>
+                            <CardContent className="space-y-3">
+                                <label className="flex items-center justify-between rounded-lg border border-border/60 bg-secondary/20 px-4 py-3">
+                                    <div>
+                                        <div className="text-sm font-medium">{locale === "en" ? "Stock Analysis runtime" : "股市分析背景執行"}</div>
+                                        <div className="text-xs text-muted-foreground">{locale === "en" ? "Quotes/chart/news refresh + snapshot sync" : "行情/走勢/新聞刷新 + 快照同步"}</div>
+                                    </div>
+                                    <input
+                                        type="checkbox"
+                                        checked={stocksFeatureEnabled}
+                                        onChange={(event) => {
+                                            const enabled = event.target.checked;
+                                            setStocksFeatureEnabled(enabled);
+                                            writeFeatureEnabled(STOCKS_FEATURE_ENABLED_STORAGE_KEY, enabled);
+                                        }}
+                                        className="h-4 w-4 accent-primary"
+                                    />
+                                </label>
+                                <label className="flex items-center justify-between rounded-lg border border-border/60 bg-secondary/20 px-4 py-3">
+                                    <div>
+                                        <div className="text-sm font-medium">{locale === "en" ? "Crypto Analysis runtime" : "加密貨幣分析背景執行"}</div>
+                                        <div className="text-xs text-muted-foreground">{locale === "en" ? "Quotes/chart/news refresh + snapshot sync" : "行情/走勢/新聞刷新 + 快照同步"}</div>
+                                    </div>
+                                    <input
+                                        type="checkbox"
+                                        checked={cryptoFeatureEnabled}
+                                        onChange={(event) => {
+                                            const enabled = event.target.checked;
+                                            setCryptoFeatureEnabled(enabled);
+                                            writeFeatureEnabled(CRYPTO_FEATURE_ENABLED_STORAGE_KEY, enabled);
+                                        }}
+                                        className="h-4 w-4 accent-primary"
+                                    />
+                                </label>
+                            </CardContent>
+                        </Card>
                         <SystemHealthDashboard systemStatus={systemStatus} />
                         <SystemUpdateSection />
                     </div>

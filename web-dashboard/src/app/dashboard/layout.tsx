@@ -12,9 +12,9 @@ import { LanguageToggle } from "@/components/LanguageToggle";
 import { OpsStyleSwitcher } from "@/components/OpsStyleSwitcher";
 import { useI18n } from "@/components/I18nProvider";
 import GlobalAutoDiaryBell from "./components/GlobalAutoDiaryBell";
+import { SIDEBAR_NAV_HIDDEN_STORAGE_KEY, SIDEBAR_NAV_HIDDEN_UPDATED_EVENT } from "@/lib/dashboard-feature-flags";
 
 const SIDEBAR_NAV_ORDER_STORAGE_KEY = "golem-sidebar-nav-order-v1";
-const SIDEBAR_NAV_HIDDEN_STORAGE_KEY = "golem-sidebar-nav-hidden-v1";
 
 const NAV_ITEMS = [
     { labelKey: "sidebar.nav.chat", href: "/dashboard/chat", icon: MessageSquare },
@@ -23,6 +23,7 @@ const NAV_ITEMS = [
     { labelKey: "sidebar.nav.promptPool", href: "/dashboard/prompt-pool", icon: Library },
     { labelKey: "sidebar.nav.promptTrends", href: "/dashboard/prompt-trends", icon: Activity },
     { labelKey: "sidebar.nav.stocks", href: "/dashboard/stocks", icon: LineChart },
+    { labelKey: "sidebar.nav.crypto", href: "/dashboard/crypto", icon: LineChart },
     { labelKey: "sidebar.nav.calendar", href: "/dashboard/calendar", icon: CalendarDays },
     { labelKey: "sidebar.nav.rpg", href: "/dashboard/rpg", icon: Gamepad2 },
     { labelKey: "sidebar.nav.skills", href: "/dashboard/skills", icon: BookOpen },
@@ -127,6 +128,7 @@ function DashboardSidebar({
     useEffect(() => {
         if (typeof window !== "undefined") {
             localStorage.setItem(SIDEBAR_NAV_HIDDEN_STORAGE_KEY, JSON.stringify([...hiddenHrefs]));
+            window.dispatchEvent(new Event(SIDEBAR_NAV_HIDDEN_UPDATED_EVENT));
         }
     }, [hiddenHrefs]);
 

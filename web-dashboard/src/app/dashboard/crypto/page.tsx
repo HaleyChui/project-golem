@@ -26,28 +26,30 @@ import {
     Search,
     Sparkles,
     Trash2,
+    User,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useGolem } from "@/components/GolemContext";
 import { useI18n } from "@/components/I18nProvider";
 import { useToast } from "@/components/ui/toast-provider";
 import { apiUrl } from "@/lib/api";
-import { apiGet, apiPost } from "@/lib/api-client";
+import { ApiError, apiGet, apiPost } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 import {
+    CRYPTO_FEATURE_ENABLED_STORAGE_KEY,
     DASHBOARD_FEATURE_FLAGS_UPDATED_EVENT,
     SIDEBAR_NAV_HIDDEN_UPDATED_EVENT,
-    STOCKS_FEATURE_ENABLED_STORAGE_KEY,
     isDashboardRouteHidden,
     readFeatureEnabled
 } from "@/lib/dashboard-feature-flags";
 
-type Market = "tw" | "us";
+type Market = "crypto";
 type MarketFilter = Market | "all";
-type RangeKey = "1D" | "1M" | "3M" | "6M" | "1Y";
+type RangeKey = "5m" | "15m" | "1h" | "1d" | "1M";
 
-type StockQuote = {
+type CryptoQuote = {
     symbol: string;
     yahooSymbol: string;
     name: string;
@@ -83,20 +85,35 @@ type HistoryPoint = {
     volume: number;
 };
 
-type StockIndicators = {
-    sma5: number | null;
+type CryptoIndicators = {
     sma20: number | null;
+    ema20: number | null;
+    ema50: number | null;
+    ema200: number | null;
     rsi14: number | null;
     macd: number | null;
     macdSignal: number | null;
     macdHistogram: number | null;
     stochasticK: number | null;
     stochasticD: number | null;
+    mfi14: number | null;
+    atr14: number | null;
+    bollingerMiddle: number | null;
+    bollingerUpper: number | null;
+    bollingerLower: number | null;
+    bollingerWidthPercent: number | null;
+    donchianUpper20: number | null;
+    donchianLower20: number | null;
+    donchianMiddle20: number | null;
     volatility: number | null;
     maxDrawdown: number | null;
     avgVolume20: number | null;
     volumeRatio: number | null;
+    volumeZScore20: number | null;
+    obv: number | null;
     distanceToSma20Percent: number | null;
+    distanceTo52wHighPercent: number | null;
+    distanceTo52wLowPercent: number | null;
 };
 
 type SearchResult = {
@@ -111,7 +128,7 @@ type SearchResult = {
 };
 
 type QuotesResponse = {
-    quotes?: StockQuote[];
+    quotes?: CryptoQuote[];
     errors?: Array<{ symbol: string; error: string }>;
     dataSource?: string;
     generatedAt?: string;
@@ -122,7 +139,7 @@ type HistoryResponse = {
         symbol: string;
         yahooSymbol: string;
         points: HistoryPoint[];
-        indicators: StockIndicators;
+        indicators: CryptoIndicators;
         dataQuality?: "live" | "stale-cache";
     };
     dataSource?: string;
@@ -133,7 +150,7 @@ type SearchResponse = {
     results?: SearchResult[];
 };
 
-type StockNewsItem = {
+type CryptoNewsItem = {
     title: string;
     url: string;
     snippet: string;
@@ -141,7 +158,7 @@ type StockNewsItem = {
     publishedAt?: string;
 };
 
-type StockNews = {
+type CryptoNews = {
     symbol: string;
     yahooSymbol: string;
     name: string;
@@ -154,26 +171,64 @@ type StockNews = {
     };
     source: string;
     fetchedAt: string;
-    results: StockNewsItem[];
+    results: CryptoNewsItem[];
 };
 
 type NewsResponse = {
-    news?: StockNews;
+    news?: CryptoNews;
 };
 
 type SnapshotRefreshResponse = {
-    snapshot?: StockDashboardSnapshot;
+    snapshot?: CryptoDashboardSnapshot;
+    quota?: {
+        limit: number;
+        used: number;
+        remaining: number;
+    };
 };
 
-type StockDashboardSnapshot = {
+type CryptoEntitlements = {
+    tier: "visitor" | "general" | "sponsor";
+    label: string;
+    watchlistLimit: number;
+    refreshIntervalSecMin: number;
+    aiInsightDailyQuota: number;
+    canUseAdvancedIndicators: boolean;
+    canExportReport: boolean;
+    historyRangeLimit: string;
+};
+
+type CryptoMembershipStatusResponse = {
+    membership?: {
+        uid: string;
+        email: string;
+        tier: "visitor" | "general" | "sponsor";
+        authenticated: boolean;
+        entitlements: CryptoEntitlements;
+        quota: {
+            limit: number;
+            used: number;
+            remaining: number;
+        };
+    };
+};
+
+type AccessGateState = {
+    title: string;
+    body: string;
+    step: 1 | 2;
+    note?: string;
+};
+
+type CryptoDashboardSnapshot = {
     source: string;
     dataStatus: string;
     marketFilter: MarketFilter;
     selectedRange: RangeKey;
-    selected: StockQuote | null;
-    indicators: StockIndicators | null;
-    news: StockNews | null;
-    watchlist: StockQuote[];
+    selected: CryptoQuote | null;
+    indicators: CryptoIndicators | null;
+    news: CryptoNews | null;
+    watchlist: CryptoQuote[];
     breadth: {
         advancers: number;
         decliners: number;
@@ -191,14 +246,16 @@ type StockDashboardSnapshot = {
     };
 };
 
-const WATCHLIST_STORAGE_KEY = "golem-stock-watchlist-v1";
-const SUPPORT_PROMPT_STORAGE_KEY = "golem-stock-support-prompt-snoozed-at-v1";
-const DEFAULT_WATCHLIST = ["2330.TW", "0050.TW", "2454.TW", "AAPL", "NVDA", "TSM"];
-const AUTO_REFRESH_MS = 60 * 1000;
+const WATCHLIST_STORAGE_KEY = "golem-crypto-watchlist-v1";
+const QUOTE_PREFERENCE_STORAGE_KEY = "golem-crypto-quote-preference-v1";
+const SUPPORT_PROMPT_STORAGE_KEY = "golem-crypto-support-prompt-snoozed-at-v1";
+const DEFAULT_WATCHLIST = ["BTC-USDT", "ETH-USDT", "SOL-USDT", "BNB-USDT", "XRP-USDT", "DOGE-USDT"];
+const DEFAULT_AUTO_REFRESH_MS = 60 * 1000;
+const NEWS_REFRESH_MS = 60 * 60 * 1000;
 const SUPPORT_PROMPT_INTERVAL_MS = 150 * 60 * 1000;
 const SUPPORT_PROMPT_INITIAL_DELAY_MS = 45 * 1000;
 const SUPPORT_URL = "https://buymeacoffee.com/arvincreator/e/534156";
-const STOCKS_DASHBOARD_HREF = "/dashboard/stocks";
+const CRYPTO_DASHBOARD_HREF = "/dashboard/crypto";
 const SUPPORT_COPY_VARIANTS = [
     {
         zhTitle: "還在努力盯盤嗎？",
@@ -249,7 +306,7 @@ const SUPPORT_COPY_VARIANTS = [
         enAction: "Send supplies",
     },
     {
-        zhTitle: "你負責看盤，我負責提醒",
+        zhTitle: "你負責看幣，我負責提醒",
         zhBody: "作者負責把工具變好。這個分工很美，只差一杯咖啡收尾。",
         zhAction: "完成分工",
         enTitle: "You watch. I remind.",
@@ -265,26 +322,53 @@ const SUPPORT_COPY_VARIANTS = [
         enAction: "Raise the cup",
     },
 ];
-const TAIWAN_SYMBOL_RE = /^\d{4,6}[A-Z]{0,3}$/;
-const TAIWAN_YAHOO_SYMBOL_RE = /^\d{4,6}[A-Z]{0,3}\.(TW|TWO)$/;
+const CRYPTO_SYMBOL_RE = /^[A-Z0-9]{2,12}[-/](USD|USDT|USDC|BUSD|DAI|BTC|ETH)$/;
+const CRYPTO_QUOTE_SUFFIXES = ["USDT", "USDC", "BUSD", "DAI", "USD", "BTC", "ETH"] as const;
+const STABLE_QUOTES = new Set(["USD", "USDT", "USDC", "BUSD", "DAI"]);
+type QuotePreference = "USDT" | "USDC";
 const RANGE_MAP: Record<RangeKey, { range: string; interval: string }> = {
-    "1D": { range: "1d", interval: "5m" },
+    "5m": { range: "1d", interval: "5m" },
+    "15m": { range: "5d", interval: "15m" },
+    "1h": { range: "1mo", interval: "60m" },
+    "1d": { range: "1y", interval: "1d" },
     "1M": { range: "1mo", interval: "1d" },
-    "3M": { range: "3mo", interval: "1d" },
-    "6M": { range: "6mo", interval: "1d" },
-    "1Y": { range: "1y", interval: "1d" },
 };
 
-function normalizeSymbol(input: string) {
+function normalizeSymbol(input: string, preferredQuote: QuotePreference = "USDT") {
     const value = String(input || "").trim().toUpperCase().replace(/\s+/g, "");
     if (!value) return "";
-    if (TAIWAN_SYMBOL_RE.test(value)) return `${value}.TW`;
-    if (TAIWAN_YAHOO_SYMBOL_RE.test(value)) return value;
-    return value;
+    if (CRYPTO_SYMBOL_RE.test(value)) {
+        const direct = value.replace("/", "-");
+        if (direct.endsWith("-USD")) return direct.replace(/-USD$/, `-${preferredQuote}`);
+        const [base, quote = ""] = direct.split("-");
+        if (STABLE_QUOTES.has(quote) && quote !== preferredQuote) return `${base}-${preferredQuote}`;
+        return direct;
+    }
+    const pair = value.replace("/", "-");
+    if (/^[A-Z0-9]{2,12}-[A-Z0-9]{2,8}$/.test(pair)) {
+        if (pair.endsWith("-USD")) return pair.replace(/-USD$/, `-${preferredQuote}`);
+        const [base, quote = ""] = pair.split("-");
+        if (STABLE_QUOTES.has(quote) && quote !== preferredQuote) return `${base}-${preferredQuote}`;
+        return pair;
+    }
+    for (const quote of CRYPTO_QUOTE_SUFFIXES) {
+        if (value.endsWith(quote) && value.length > quote.length + 1) {
+            const base = value.slice(0, -quote.length);
+            if (/^[A-Z0-9]{2,12}$/.test(base)) return `${base}-${quote}`;
+        }
+    }
+    if (/^[A-Z0-9]{2,12}$/.test(value)) return `${value}-${preferredQuote}`;
+    return value.replace("/", "-");
+}
+
+function readStoredQuotePreference(): QuotePreference {
+    if (typeof window === "undefined") return "USDT";
+    const raw = String(localStorage.getItem(QUOTE_PREFERENCE_STORAGE_KEY) || "").toUpperCase();
+    return raw === "USDC" ? "USDC" : "USDT";
 }
 
 function displaySymbol(symbol: string) {
-    return String(symbol || "").replace(/\.(TW|TWO)$/i, "");
+    return String(symbol || "").replace(/-(USD|USDT|USDC|BUSD|DAI|BTC|ETH)$/i, "");
 }
 
 function pickSupportCopyIndex(currentIndex = -1) {
@@ -348,7 +432,7 @@ function getQuoteTone(value: number | null | undefined) {
 
 function getLabelForPoint(point: HistoryPoint, range: RangeKey, localeCode: string) {
     const date = new Date(point.time);
-    if (range === "1D") {
+    if (range === "5m" || range === "15m" || range === "1h") {
         return new Intl.DateTimeFormat(localeCode, { hour: "2-digit", minute: "2-digit" }).format(date);
     }
     return new Intl.DateTimeFormat(localeCode, { month: "2-digit", day: "2-digit" }).format(date);
@@ -370,6 +454,19 @@ function getFreshnessLabel(value: string, localeCode: string) {
         hour: "2-digit",
         minute: "2-digit",
     }).format(new Date(parsed));
+}
+
+function getNextUtcResetLabel(localeCode: string) {
+    const now = new Date();
+    const next = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1, 0, 0, 0));
+    return new Intl.DateTimeFormat(localeCode, {
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        timeZone: "UTC",
+        hour12: false,
+    }).format(next);
 }
 
 function calculateSmaAt(points: Array<{ close: number }>, index: number, period: number) {
@@ -440,6 +537,8 @@ function CandlestickChart({
     const sma5Path = buildLinePath(safeData, 5, mapX, mapY);
     const sma20Path = buildLinePath(safeData, 20, mapX, mapY);
     const last = safeData[safeData.length - 1];
+    const currentPrice = Number(last?.close || 0);
+    const currentPriceY = mapY(currentPrice);
 
     return (
         <div className="h-full rounded-lg border border-border bg-background">
@@ -489,6 +588,32 @@ function CandlestickChart({
                 })}
                 {sma20Path && <path d={sma20Path} fill="none" stroke="#3b82f6" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />}
                 {sma5Path && <path d={sma5Path} fill="none" stroke="#f59e0b" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />}
+                {Number.isFinite(currentPrice) && currentPrice > 0 && (
+                    <g>
+                        <line
+                            x1={padding.left}
+                            x2={width - padding.right + 10}
+                            y1={currentPriceY}
+                            y2={currentPriceY}
+                            stroke="#22d3ee"
+                            strokeWidth="1.6"
+                            strokeDasharray="6 6"
+                            opacity="0.95"
+                        />
+                        <rect
+                            x={width - padding.right + 14}
+                            y={currentPriceY - 10}
+                            width={84}
+                            height={20}
+                            rx={6}
+                            fill="rgba(8, 145, 178, 0.18)"
+                            stroke="rgba(34, 211, 238, 0.85)"
+                        />
+                        <text x={width - padding.right + 56} y={currentPriceY + 4} textAnchor="middle" className="fill-cyan-300 text-[11px] font-semibold">
+                            {formatNumber(currentPrice, localeCode)}
+                        </text>
+                    </g>
+                )}
                 <text x={padding.left} y={height - 12} className="fill-muted-foreground text-[11px]">
                     {safeData[0]?.label}
                 </text>
@@ -509,22 +634,23 @@ function CandlestickChart({
     );
 }
 
-export default function StockAnalysisPage() {
+export default function CryptoAnalysisPage() {
     const { locale } = useI18n();
     const isEnglish = locale === "en";
     const localeCode = isEnglish ? "en-US" : "zh-TW";
     const toast = useToast();
     const { activeGolem } = useGolem();
+    const [quotePreference, setQuotePreference] = useState<QuotePreference>(() => readStoredQuotePreference());
 
     const [watchlist, setWatchlist] = useState<string[]>(() => readStoredWatchlist());
-    const [quotes, setQuotes] = useState<StockQuote[]>([]);
+    const [quotes, setQuotes] = useState<CryptoQuote[]>([]);
     const [quoteErrors, setQuoteErrors] = useState<Array<{ symbol: string; error: string }>>([]);
     const [selectedMarket, setSelectedMarket] = useState<MarketFilter>("all");
-    const [selectedSymbol, setSelectedSymbol] = useState(() => readStoredWatchlist()[0] || "2330.TW");
-    const [range, setRange] = useState<RangeKey>("3M");
+    const [selectedSymbol, setSelectedSymbol] = useState(() => readStoredWatchlist()[0] || "BTC-USDT");
+    const [range, setRange] = useState<RangeKey>("5m");
     const [historyPoints, setHistoryPoints] = useState<HistoryPoint[]>([]);
-    const [indicators, setIndicators] = useState<StockIndicators | null>(null);
-    const [news, setNews] = useState<StockNews | null>(null);
+    const [indicators, setIndicators] = useState<CryptoIndicators | null>(null);
+    const [news, setNews] = useState<CryptoNews | null>(null);
     const [query, setQuery] = useState("");
     const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
     const [isLoadingQuotes, setIsLoadingQuotes] = useState(true);
@@ -534,22 +660,116 @@ export default function StockAnalysisPage() {
     const [isSending, setIsSending] = useState(false);
     const [sentSnapshot, setSentSnapshot] = useState(false);
     const [lastUpdatedAt, setLastUpdatedAt] = useState("");
-    const [isMounted, setIsMounted] = useState(false);
     const [showSupportPrompt, setShowSupportPrompt] = useState(false);
     const [supportCopyIndex, setSupportCopyIndex] = useState(0);
     const [isFeatureEnabled, setIsFeatureEnabled] = useState(true);
     const [isSidebarHidden, setIsSidebarHidden] = useState(false);
+    const [membership, setMembership] = useState<CryptoMembershipStatusResponse["membership"] | null>(null);
+    const [loginEmail, setLoginEmail] = useState("");
+    const [loginPassword, setLoginPassword] = useState("");
+    const [isLoginLoading, setIsLoginLoading] = useState(false);
+    const [accessGate, setAccessGate] = useState<AccessGateState | null>(null);
+    const [isCheckingSponsor, setIsCheckingSponsor] = useState(false);
+    const [isBenefitsModalOpen, setIsBenefitsModalOpen] = useState(false);
+    const [isAccountModalOpen, setIsAccountModalOpen] = useState(false);
+    const [authMode, setAuthMode] = useState<"login" | "register">("login");
+    const pendingRetryRef = useRef<null | (() => void)>(null);
     const lastInteractionRefreshRef = useRef(0);
+    const newsCardRef = useRef<HTMLDivElement | null>(null);
+    const [isNewsCardVisible, setIsNewsCardVisible] = useState(false);
     const isRuntimeActive = isFeatureEnabled && !isSidebarHidden;
+    const isSponsorTier = (membership?.tier || "visitor") === "sponsor";
+    const canUseAdvancedIndicators = Boolean(membership?.entitlements?.canUseAdvancedIndicators) && isSponsorTier;
+    const refreshIntervalMs = Math.max(
+        15_000,
+        Number(membership?.entitlements?.refreshIntervalSecMin || (DEFAULT_AUTO_REFRESH_MS / 1000)) * 1000
+    );
+    const nextQuotaResetUtc = getNextUtcResetLabel(localeCode);
+
+    const loadMembership = useCallback(async () => {
+        try {
+            const data = await apiGet<CryptoMembershipStatusResponse>(apiUrl("/api/crypto/membership/status"));
+            setMembership(data.membership || null);
+        } catch {
+            setMembership(null);
+        }
+    }, []);
+
+    const openAccessGate = useCallback((title: string, body: string, step: 1 | 2 = 1, note = "") => {
+        setAccessGate({ title, body, step, note });
+    }, []);
+
+    const handleApiAccessError = useCallback((
+        error: unknown,
+        fallbackTitle: string,
+        fallbackBody: string,
+        retryAction?: (() => void) | null
+    ) => {
+        if (retryAction) pendingRetryRef.current = retryAction;
+        if (!(error instanceof ApiError)) {
+            openAccessGate(fallbackTitle, fallbackBody);
+            return;
+        }
+        const payload = (error.payload && typeof error.payload === "object")
+            ? (error.payload as Record<string, unknown>)
+            : {};
+        const code = String(payload.error || "");
+        const tier = String(payload.tier || membership?.tier || "visitor");
+
+        if (code === "general_membership_required") {
+            openAccessGate(
+                isEnglish ? "General membership required" : "需要一般會員以上",
+                isEnglish
+                    ? `Your current tier is ${tier}. Sponsor requires at least USD $5 and unlocks full crypto analysis features.`
+                    : `你目前是 ${tier} 等級。贊助會員門檻為至少 5 美金，升級後可解鎖完整幣市分析功能。`
+            );
+            return;
+        }
+        if (code === "membership_range_limit") {
+            const allowedUntil = String(payload.allowedUntil || "1d");
+            openAccessGate(
+                isEnglish ? "Range locked by membership tier" : "查詢區間受會員等級限制",
+                isEnglish
+                    ? `Your current tier supports history up to ${allowedUntil}. Sponsor (min USD $5) unlocks longer ranges.`
+                    : `你目前會員僅支援到 ${allowedUntil}。贊助會員（至少 5 美金）可解鎖更長歷史區間。`
+            );
+            return;
+        }
+        if (code === "ai_insight_quota_exceeded") {
+            const quota = (payload.quota && typeof payload.quota === "object")
+                ? (payload.quota as Record<string, unknown>)
+                : {};
+            const limit = Number(quota.limit || 0);
+            const used = Number(quota.used || limit);
+            openAccessGate(
+                isEnglish ? "Daily AI quota reached" : "今日 AI 配額已用完",
+                isEnglish
+                    ? `You have used ${used}/${limit} analyses today. Sponsor (min USD $5) gives a much higher daily quota.`
+                    : `你今天已使用 ${used}/${limit} 次分析。贊助會員（至少 5 美金）可獲得更高每日配額。`
+            );
+            return;
+        }
+        if (code === "sponsor_membership_required") {
+            openAccessGate(
+                isEnglish ? "Sponsor-only feature" : "此功能限贊助會員",
+                isEnglish
+                    ? "This feature is available to Sponsor members only."
+                    : "這項功能目前僅開放給贊助會員。"
+            );
+            return;
+        }
+        openAccessGate(fallbackTitle, fallbackBody);
+    }, [isEnglish, membership?.tier, openAccessGate]);
 
     useEffect(() => {
-        setIsMounted(true);
-    }, []);
+        // eslint-disable-next-line react-hooks/set-state-in-effect
+        loadMembership();
+    }, [loadMembership]);
 
     useEffect(() => {
         const syncRuntimeFlags = () => {
-            setIsFeatureEnabled(readFeatureEnabled(STOCKS_FEATURE_ENABLED_STORAGE_KEY, true));
-            setIsSidebarHidden(isDashboardRouteHidden(STOCKS_DASHBOARD_HREF));
+            setIsFeatureEnabled(readFeatureEnabled(CRYPTO_FEATURE_ENABLED_STORAGE_KEY, true));
+            setIsSidebarHidden(isDashboardRouteHidden(CRYPTO_DASHBOARD_HREF));
         };
         syncRuntimeFlags();
         window.addEventListener(DASHBOARD_FEATURE_FLAGS_UPDATED_EVENT, syncRuntimeFlags);
@@ -567,7 +787,10 @@ export default function StockAnalysisPage() {
     }, [watchlist]);
 
     useEffect(() => {
-        if (!isMounted) return;
+        localStorage.setItem(QUOTE_PREFERENCE_STORAGE_KEY, quotePreference);
+    }, [quotePreference]);
+
+    useEffect(() => {
         if (showSupportPrompt) return;
         const readSnoozedAt = () => Number(localStorage.getItem(SUPPORT_PROMPT_STORAGE_KEY) || 0);
         const scheduleDelay = () => {
@@ -580,13 +803,13 @@ export default function StockAnalysisPage() {
             setShowSupportPrompt(true);
         }, scheduleDelay());
         return () => window.clearTimeout(timer);
-    }, [isMounted, showSupportPrompt]);
+    }, [showSupportPrompt]);
 
     const loadQuotes = useCallback(async () => {
         if (!watchlist.length) return;
         setIsLoadingQuotes(true);
         try {
-            const data = await apiGet<QuotesResponse>(apiUrl(`/api/stocks/quotes?symbols=${encodeURIComponent(watchlist.join(","))}`));
+            const data = await apiGet<QuotesResponse>(apiUrl(`/api/crypto/quotes?symbols=${encodeURIComponent(watchlist.join(","))}`));
             const nextQuotes = Array.isArray(data.quotes) ? data.quotes : [];
             setQuotes(nextQuotes);
             setQuoteErrors(Array.isArray(data.errors) ? data.errors : []);
@@ -605,13 +828,13 @@ export default function StockAnalysisPage() {
     }, [isEnglish, selectedSymbol, toast, watchlist]);
 
     const loadHistory = useCallback(async (symbol: string, nextRange: RangeKey) => {
-        const safeSymbol = normalizeSymbol(symbol);
+        const safeSymbol = normalizeSymbol(symbol, quotePreference);
         if (!safeSymbol) return;
         const rangeConfig = RANGE_MAP[nextRange];
         setIsLoadingHistory(true);
         try {
             const data = await apiGet<HistoryResponse>(
-                apiUrl(`/api/stocks/history?symbol=${encodeURIComponent(safeSymbol)}&range=${rangeConfig.range}&interval=${rangeConfig.interval}`)
+                apiUrl(`/api/crypto/history?symbol=${encodeURIComponent(safeSymbol)}&range=${rangeConfig.range}&interval=${rangeConfig.interval}`)
             );
             setHistoryPoints(Array.isArray(data.history?.points) ? data.history.points : []);
             setIndicators(data.history?.indicators || null);
@@ -627,11 +850,16 @@ export default function StockAnalysisPage() {
             setIndicators(null);
             const message = error instanceof Error ? error.message : String(error);
             toast.warning(isEnglish ? "Failed to load chart" : "讀取走勢失敗", message);
+            handleApiAccessError(
+                error,
+                isEnglish ? "Chart access limited" : "圖表權限受限",
+                isEnglish ? "Upgrade membership to unlock broader chart capabilities." : "升級會員可解鎖更完整圖表能力。"
+            );
             return null;
         } finally {
             setIsLoadingHistory(false);
         }
-    }, [isEnglish, toast]);
+    }, [handleApiAccessError, isEnglish, quotePreference, toast]);
 
     const refreshDashboard = useCallback(async () => {
         await Promise.all([
@@ -640,7 +868,7 @@ export default function StockAnalysisPage() {
         ]);
     }, [loadHistory, loadQuotes, range, selectedSymbol]);
 
-    const loadNews = useCallback(async (quote: StockQuote | null) => {
+    const loadNews = useCallback(async (quote: CryptoQuote | null) => {
         if (!quote?.yahooSymbol) {
             setNews(null);
             return null;
@@ -648,26 +876,33 @@ export default function StockAnalysisPage() {
         setIsLoadingNews(true);
         try {
             const data = await apiGet<NewsResponse>(
-                apiUrl(`/api/stocks/news?symbol=${encodeURIComponent(quote.yahooSymbol)}&name=${encodeURIComponent(quote.name || quote.symbol)}`)
+                apiUrl(`/api/crypto/news?symbol=${encodeURIComponent(quote.yahooSymbol)}&name=${encodeURIComponent(quote.name || quote.symbol)}`)
             );
             setNews(data.news || null);
             return data.news || null;
         } catch (error) {
             setNews(null);
-            console.warn("[Stocks] Failed to load stock news:", error);
+            console.warn("[Crypto] Failed to load crypto news:", error);
+            handleApiAccessError(
+                error,
+                isEnglish ? "News access limited" : "新聞權限受限",
+                isEnglish ? "This news module needs a higher membership tier." : "此新聞模組需要更高會員等級。"
+            );
             return null;
         } finally {
             setIsLoadingNews(false);
         }
-    }, []);
+    }, [handleApiAccessError, isEnglish]);
 
     useEffect(() => {
         if (!isRuntimeActive) return;
+        // eslint-disable-next-line react-hooks/set-state-in-effect
         loadQuotes();
     }, [isRuntimeActive, loadQuotes]);
 
     useEffect(() => {
         if (!isRuntimeActive) return;
+        // eslint-disable-next-line react-hooks/set-state-in-effect
         loadHistory(selectedSymbol, range);
     }, [isRuntimeActive, loadHistory, range, selectedSymbol]);
 
@@ -677,7 +912,7 @@ export default function StockAnalysisPage() {
             if (typeof document !== "undefined" && document.hidden) return;
             refreshDashboard();
         };
-        const timer = window.setInterval(tick, AUTO_REFRESH_MS);
+        const timer = window.setInterval(tick, refreshIntervalMs);
         const handleVisibilityChange = () => {
             if (!document.hidden) refreshDashboard();
         };
@@ -686,19 +921,20 @@ export default function StockAnalysisPage() {
             window.clearInterval(timer);
             document.removeEventListener("visibilitychange", handleVisibilityChange);
         };
-    }, [isRuntimeActive, refreshDashboard]);
+    }, [isRuntimeActive, refreshDashboard, refreshIntervalMs]);
 
     const refreshOnInteraction = useCallback(() => {
         if (!isRuntimeActive) return;
         const now = Date.now();
-        if (now - lastInteractionRefreshRef.current < AUTO_REFRESH_MS) return;
+        if (now - lastInteractionRefreshRef.current < refreshIntervalMs) return;
         lastInteractionRefreshRef.current = now;
         refreshDashboard();
-    }, [isRuntimeActive, refreshDashboard]);
+    }, [isRuntimeActive, refreshDashboard, refreshIntervalMs]);
 
     useEffect(() => {
         const safeQuery = query.trim();
         if (!safeQuery) {
+            // eslint-disable-next-line react-hooks/set-state-in-effect
             setSearchResults([]);
             setIsSearching(false);
             return;
@@ -706,7 +942,7 @@ export default function StockAnalysisPage() {
         const timer = setTimeout(async () => {
             setIsSearching(true);
             try {
-                const data = await apiGet<SearchResponse>(apiUrl(`/api/stocks/search?q=${encodeURIComponent(safeQuery)}`));
+                const data = await apiGet<SearchResponse>(apiUrl(`/api/crypto/search?q=${encodeURIComponent(safeQuery)}`));
                 setSearchResults(Array.isArray(data.results) ? data.results : []);
             } catch {
                 setSearchResults([]);
@@ -731,22 +967,51 @@ export default function StockAnalysisPage() {
     const searchPreview = useMemo(() => {
         const safeQuery = query.trim();
         if (!safeQuery) return null;
-        const normalized = normalizeSymbol(safeQuery);
+        const normalized = normalizeSymbol(safeQuery, quotePreference);
         return searchResults[0] || {
             symbol: displaySymbol(normalized),
             yahooSymbol: normalized,
-            name: isSearching ? (isEnglish ? "Resolving from symbol directory..." : "正在從股票清單辨識...") : (isEnglish ? "No directory match yet" : "尚無清單匹配"),
-            market: normalized.endsWith(".TW") || normalized.endsWith(".TWO") ? "tw" as Market : "us" as Market,
+            name: isSearching ? (isEnglish ? "Resolving from symbol directory..." : "正在從加密貨幣清單辨識...") : (isEnglish ? "No directory match yet" : "尚無清單匹配"),
+            market: "crypto" as Market,
             exchange: "",
             type: "",
             dataSource: "input",
         };
-    }, [isEnglish, isSearching, query, searchResults]);
+    }, [isEnglish, isSearching, query, quotePreference, searchResults]);
 
     useEffect(() => {
         if (!isRuntimeActive) return;
+        if (!isSponsorTier) return;
+        // eslint-disable-next-line react-hooks/set-state-in-effect
         loadNews(selectedQuote);
-    }, [isRuntimeActive, loadNews, selectedQuote]);
+    }, [isRuntimeActive, isSponsorTier, loadNews, selectedQuote]);
+
+    useEffect(() => {
+        if (!isRuntimeActive) return;
+        if (!isSponsorTier) return;
+        if (!selectedQuote?.yahooSymbol || !isNewsCardVisible) return;
+        const timer = window.setInterval(() => {
+            loadNews(selectedQuote);
+        }, NEWS_REFRESH_MS);
+        return () => window.clearInterval(timer);
+    }, [isNewsCardVisible, isRuntimeActive, isSponsorTier, loadNews, selectedQuote]);
+
+    useEffect(() => {
+        const target = newsCardRef.current;
+        if (!target || typeof IntersectionObserver === "undefined") {
+            setIsNewsCardVisible(true);
+            return;
+        }
+        const observer = new IntersectionObserver(
+            (entries) => {
+                const entry = entries[0];
+                setIsNewsCardVisible(Boolean(entry?.isIntersecting));
+            },
+            { threshold: 0.2 }
+        );
+        observer.observe(target);
+        return () => observer.disconnect();
+    }, []);
 
     const chartData = useMemo(() => buildChartData(historyPoints, range, localeCode), [historyPoints, localeCode, range]);
 
@@ -759,8 +1024,8 @@ export default function StockAnalysisPage() {
         return { advancers, decliners, averageMove, totalTurnover, count: source.length };
     }, [quotes, visibleQuotes]);
 
-    const snapshot = useMemo<StockDashboardSnapshot>(() => ({
-        source: "dashboard-stock-analysis",
+    const snapshot = useMemo<CryptoDashboardSnapshot>(() => ({
+        source: "dashboard-crypto-analysis",
         dataStatus: "live-market-data",
         marketFilter: selectedMarket,
         selectedRange: range,
@@ -777,19 +1042,20 @@ export default function StockAnalysisPage() {
         if (!isRuntimeActive) return;
         if (!selectedQuote || !quotes.length) return;
         const timer = setTimeout(() => {
-            apiPost(apiUrl("/api/stocks/snapshot"), { snapshot }).catch((error) => {
-                console.warn("[Stocks] Failed to sync dashboard snapshot:", error);
+            apiPost(apiUrl("/api/crypto/snapshot"), { snapshot }).catch((error) => {
+                console.warn("[Crypto] Failed to sync dashboard snapshot:", error);
             });
         }, 500);
         return () => clearTimeout(timer);
     }, [isRuntimeActive, quotes.length, selectedQuote, snapshot]);
 
     const addSymbol = (symbol: string) => {
-        const safeSymbol = normalizeSymbol(symbol);
+        const safeSymbol = normalizeSymbol(symbol, quotePreference);
         if (!safeSymbol) return;
+        const watchlistLimit = Math.max(3, Number(membership?.entitlements?.watchlistLimit || 3));
         setWatchlist((prev) => {
             if (prev.includes(safeSymbol)) return prev;
-            return [safeSymbol, ...prev].slice(0, 20);
+            return [safeSymbol, ...prev].slice(0, watchlistLimit);
         });
         setSelectedSymbol(safeSymbol);
         setQuery("");
@@ -812,13 +1078,26 @@ export default function StockAnalysisPage() {
             );
             return;
         }
+        const tier = membership?.tier || "visitor";
+        if (tier === "visitor") {
+            toast.warning(
+                isEnglish ? "General membership required" : "需要一般會員以上",
+                isEnglish ? "AI snapshot analysis starts from General membership." : "AI 看板分析從一般會員開始提供。"
+            );
+            pendingRetryRef.current = () => { void handleAskGolem(); };
+            openAccessGate(
+                isEnglish ? "Unlock AI board analysis" : "解鎖 AI 看板分析",
+                isEnglish ? "Upgrade to Sponsor (min USD $5) to unlock full AI analysis quota and complete crypto features." : "升級贊助會員（至少 5 美金）可解鎖完整 AI 分析配額與全部幣市功能。"
+            );
+            return;
+        }
         setIsSending(true);
         setSentSnapshot(false);
         try {
             await refreshDashboard();
             let snapshotForGolem = snapshot;
             try {
-                const refreshed = await apiPost<SnapshotRefreshResponse>(apiUrl("/api/stocks/snapshot/refresh"), {
+                const refreshed = await apiPost<SnapshotRefreshResponse>(apiUrl("/api/crypto/snapshot/refresh"), {
                     snapshot,
                     symbols: watchlist,
                     selectedSymbol,
@@ -836,13 +1115,20 @@ export default function StockAnalysisPage() {
                     isEnglish ? "Using current snapshot" : "使用目前快照",
                     isEnglish ? `Live refresh failed: ${message}` : `即時刷新失敗：${message}`
                 );
+                handleApiAccessError(
+                    refreshError,
+                    isEnglish ? "Snapshot refresh limited" : "快照刷新受限",
+                    isEnglish ? "Upgrade membership to continue high-frequency AI analysis." : "升級會員可繼續高頻 AI 分析。",
+                    () => { void handleAskGolem(); }
+                );
+                return;
             }
-            const symbolsForPrompt = Array.from(new Set([selectedSymbol, ...watchlist].map(normalizeSymbol).filter(Boolean)));
+            const symbolsForPrompt = Array.from(new Set([selectedSymbol, ...watchlist].map((symbol) => normalizeSymbol(symbol, quotePreference)).filter(Boolean)));
             const message = [
-                `/stockboard ${symbolsForPrompt.join(" ")}`,
+                `/cryptoboard ${symbolsForPrompt.join(" ")}`,
                 isEnglish
-                    ? "Analyze the current Dashboard stock snapshot. The dashboard has just synchronized the latest server-side structured snapshot; use that complete snapshot as the primary source, mention freshness, and avoid guaranteed financial advice."
-                    : "請分析目前 Dashboard 股市看板。Dashboard 已先同步最新的 server-side 結構化快照；請以完整快照為主要資料來源，說明資料新鮮度，且不要做保證式投資建議。",
+                    ? "Analyze the current Dashboard crypto snapshot. The dashboard has synchronized the latest server-side structured snapshot; use that as the primary source, mention freshness, and avoid guaranteed financial advice."
+                    : "請分析目前 Dashboard 加密貨幣看板。Dashboard 已先同步最新的 server-side 結構化快照；請以完整快照為主要資料來源，說明資料新鮮度，且不要做保證式投資建議。",
                 snapshotForGolem?.generatedAt
                     ? `${isEnglish ? "Snapshot generated at" : "快照產生時間"}: ${snapshotForGolem.generatedAt}`
                     : "",
@@ -853,11 +1139,107 @@ export default function StockAnalysisPage() {
                 isEnglish ? "Snapshot sent" : "已送出看板快照",
                 isEnglish ? "Golem is analyzing the live board in the console." : "Golem 會在控制台裡分析這份即時看板。"
             );
+            loadMembership();
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             toast.error(isEnglish ? "Send failed" : "送出失敗", message);
+            handleApiAccessError(
+                error,
+                isEnglish ? "Feature access limited" : "功能權限受限",
+                isEnglish ? "Upgrade membership to unlock this action." : "升級會員可解鎖此操作。"
+            );
         } finally {
             setIsSending(false);
+        }
+    };
+
+    const handleMembershipLogin = async () => {
+        if (!loginEmail.trim() || !loginPassword.trim()) return;
+        setIsLoginLoading(true);
+        try {
+            await apiPost(apiUrl("/api/crypto/membership/login"), {
+                email: loginEmail.trim(),
+                password: loginPassword,
+            });
+            setLoginPassword("");
+            await loadMembership();
+            setAccessGate(null);
+            toast.success(isEnglish ? "Membership linked" : "會員已連結", isEnglish ? "Crypto permissions updated." : "Crypto 權限已更新。");
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            toast.error(isEnglish ? "Login failed" : "登入失敗", message);
+        } finally {
+            setIsLoginLoading(false);
+        }
+    };
+
+    const handleMembershipRegister = async () => {
+        if (!loginEmail.trim() || !loginPassword.trim()) return;
+        setIsLoginLoading(true);
+        try {
+            await apiPost(apiUrl("/api/crypto/membership/register"), {
+                email: loginEmail.trim(),
+                password: loginPassword,
+            });
+            setLoginPassword("");
+            await loadMembership();
+            setAccessGate(null);
+            setIsAccountModalOpen(false);
+            toast.success(isEnglish ? "Registration complete" : "註冊完成", isEnglish ? "Membership account is ready." : "會員帳號已建立並可使用。");
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            toast.error(isEnglish ? "Registration failed" : "註冊失敗", message);
+        } finally {
+            setIsLoginLoading(false);
+        }
+    };
+
+    const handleMembershipLogout = async () => {
+        try {
+            await apiPost(apiUrl("/api/crypto/membership/logout"), {});
+            await loadMembership();
+            toast.success(isEnglish ? "Logged out" : "已登出會員", isEnglish ? "Back to Visitor permissions." : "已回到訪客權限。");
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            toast.error(isEnglish ? "Logout failed" : "登出失敗", message);
+        }
+    };
+
+    const handleCheckSponsorStatus = async () => {
+        setIsCheckingSponsor(true);
+        try {
+            const data = await apiGet<CryptoMembershipStatusResponse>(apiUrl("/api/crypto/membership/status"));
+            const nextMembership = data.membership || null;
+            setMembership(nextMembership);
+            if (nextMembership?.tier === "sponsor") {
+                setAccessGate(null);
+                toast.success(
+                    isEnglish ? "Sponsor unlocked" : "已啟用贊助會員",
+                    isEnglish ? "Full crypto privileges are now active." : "完整 Crypto 權限已啟用。"
+                );
+                const retry = pendingRetryRef.current;
+                pendingRetryRef.current = null;
+                if (typeof retry === "function") retry();
+                return;
+            }
+            setAccessGate((prev) => prev
+                ? {
+                    ...prev,
+                    step: 2,
+                    note: isEnglish
+                        ? "Sponsor status not active yet. Please wait a moment and try check again."
+                        : "目前尚未檢測到贊助資格，請稍候再按一次檢查。",
+                }
+                : prev);
+            toast.warning(
+                isEnglish ? "Sponsor not detected yet" : "尚未檢測到贊助資格",
+                isEnglish ? "Please try again shortly." : "請稍後再試。"
+            );
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            toast.error(isEnglish ? "Status check failed" : "狀態檢查失敗", message);
+        } finally {
+            setIsCheckingSponsor(false);
         }
     };
 
@@ -865,10 +1247,65 @@ export default function StockAnalysisPage() {
         localStorage.setItem(SUPPORT_PROMPT_STORAGE_KEY, String(Date.now()));
         setShowSupportPrompt(false);
     };
+    const handleQuotePreferenceChange = (quote: QuotePreference) => {
+        setQuotePreference(quote);
+        setWatchlist((prev) => prev.map((symbol) => normalizeSymbol(symbol, quote)));
+        setSelectedSymbol((prev) => normalizeSymbol(prev, quote));
+    };
     const supportCopy = SUPPORT_COPY_VARIANTS[supportCopyIndex % SUPPORT_COPY_VARIANTS.length];
 
     return (
         <div className="min-h-full bg-background text-foreground" onPointerDown={refreshOnInteraction}>
+            {accessGate && (
+                <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
+                    <div className="w-full max-w-md rounded-2xl border-2 border-amber-400/70 bg-card p-5 shadow-2xl">
+                        <div className="mb-3 flex items-center gap-2 text-amber-400">
+                            <Sparkles className="h-5 w-5" />
+                            <span className="text-sm font-semibold">{isEnglish ? "Membership Upgrade" : "會員升級提示"}</span>
+                        </div>
+                        <h3 className="text-lg font-bold text-foreground">{accessGate.title}</h3>
+                        <p className="mt-2 text-sm leading-6 text-muted-foreground">{accessGate.body}</p>
+                        {accessGate.step === 2 && accessGate.note && (
+                            <div className="mt-3 rounded-lg border border-amber-400/40 bg-amber-400/10 p-2 text-xs text-amber-200">
+                                {accessGate.note}
+                            </div>
+                        )}
+                        <div className="mt-4 flex flex-col gap-2 sm:flex-row">
+                            <Button
+                                className="bg-amber-400 text-amber-950 hover:bg-amber-300"
+                                asChild
+                            >
+                                <a
+                                    href={SUPPORT_URL}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    onClick={() => setAccessGate((prev) => prev ? {
+                                        ...prev,
+                                        step: 2,
+                                        note: isEnglish
+                                            ? "After sponsoring, click “I have sponsored, check now”."
+                                            : "完成贊助後，請按「我已贊助，立即檢查」。",
+                                    } : prev)}
+                                >
+                                    <Coffee className="mr-2 h-4 w-4" />
+                                    {isEnglish ? "Sponsor Now (USD $5+)" : "立即贊助升級（5 美金起）"}
+                                </a>
+                            </Button>
+                            {accessGate.step === 2 ? (
+                                <Button variant="secondary" onClick={handleCheckSponsorStatus} disabled={isCheckingSponsor}>
+                                    {isCheckingSponsor
+                                        ? (isEnglish ? "Checking..." : "檢查中...")
+                                        : (isEnglish ? "I have sponsored, check now" : "我已贊助，立即檢查")}
+                                </Button>
+                            ) : (
+                                <Button variant="secondary" onClick={() => setAccessGate(null)}>
+                                    {isEnglish ? "Maybe later" : "稍後再說"}
+                                </Button>
+                            )}
+                        </div>
+                    </div>
+                </div>
+            )}
             {showSupportPrompt && (
                 <div className="fixed right-4 top-4 z-50 w-[calc(100vw-2rem)] max-w-sm rounded-lg border border-amber-300/70 bg-card p-4 shadow-2xl shadow-amber-500/15 dark:border-amber-400/35">
                     <div className="flex items-start gap-3">
@@ -909,15 +1346,15 @@ export default function StockAnalysisPage() {
                     <div className="space-y-2">
                         <div className="flex items-center gap-2 text-sm font-semibold text-primary">
                             <LineChart className="h-4 w-4" />
-                            {isEnglish ? "Live TW + US Market Board" : "即時台股 + 美股行情看板"}
+                            {isEnglish ? "Live Crypto Market Board" : "即時加密貨幣行情看板"}
                         </div>
                         <h1 className="text-2xl font-semibold tracking-normal sm:text-3xl">
-                            {isEnglish ? "Stock Analysis" : "股市分析"}
+                            {isEnglish ? "Crypto Analysis" : "幣市分析"}
                         </h1>
                         <p className="max-w-3xl text-sm leading-6 text-muted-foreground">
                             {isEnglish
                                 ? "Track watchlists, inspect indicators, search symbols, and send a structured live snapshot to Golem."
-                                : "追蹤自選股、檢視技術指標、搜尋標的，並把結構化即時快照交給 Golem 分析。"}
+                                : "追蹤自選幣、檢視技術指標、搜尋幣種，並把結構化即時快照交給 Golem 分析。"}
                         </p>
                     </div>
                     <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
@@ -929,10 +1366,27 @@ export default function StockAnalysisPage() {
                             </div>
                         )}
                         <div className="inline-flex rounded-lg border border-border bg-card p-1">
+                            {(["USDT", "USDC"] as QuotePreference[]).map((quote) => (
+                                <button
+                                    key={quote}
+                                    type="button"
+                                    onClick={() => handleQuotePreferenceChange(quote)}
+                                    className={cn(
+                                        "h-9 rounded-md px-3 text-sm font-semibold transition-colors",
+                                        quotePreference === quote
+                                            ? "bg-secondary text-foreground"
+                                            : "text-muted-foreground hover:bg-accent hover:text-foreground"
+                                    )}
+                                    title={isEnglish ? `Prefer ${quote} quote pairs` : `偏好 ${quote} 交易對`}
+                                >
+                                    {quote}
+                                </button>
+                            ))}
+                        </div>
+                        <div className="inline-flex rounded-lg border border-border bg-card p-1">
                             {[
                                 { key: "all", label: isEnglish ? "All" : "全部" },
-                                { key: "tw", label: isEnglish ? "Taiwan" : "台股" },
-                                { key: "us", label: isEnglish ? "US" : "美股" },
+                                { key: "crypto", label: isEnglish ? "Crypto" : "加密貨幣" },
                             ].map((option) => (
                                 <button
                                     key={option.key}
@@ -967,16 +1421,26 @@ export default function StockAnalysisPage() {
                                 {isEnglish ? "Support" : "小額贊助"}
                             </a>
                         </Button>
+                        <Button variant="secondary" onClick={() => setIsBenefitsModalOpen(true)}>
+                            <Sparkles className="mr-2 h-4 w-4" />
+                            {isEnglish ? "Benefits" : "會員福利"}
+                        </Button>
+                        <Button variant="secondary" onClick={() => setIsAccountModalOpen(true)}>
+                            <User className="mr-2 h-4 w-4" />
+                            {membership?.authenticated ? (isEnglish ? "Account" : "會員帳號") : (isEnglish ? "Login / Register" : "登入 / 註冊")}
+                        </Button>
                     </div>
                 </section>
 
                 <section className="grid gap-3 xl:grid-cols-[minmax(280px,0.9fr)_minmax(280px,1fr)_minmax(280px,1fr)]">
-                    <Card className="rounded-lg border-border/80">
+                    <Card ref={newsCardRef} className="rounded-lg border-border/80">
                         <CardContent className="flex gap-3 p-3">
                             <Info className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
                             <div className="space-y-1 text-xs leading-5 text-muted-foreground">
                                 <div className="font-semibold text-foreground">{isEnglish ? "How to use" : "使用說明"}</div>
-                                <p>{isEnglish ? "Search a symbol, select a watchlist row, then ask Golem. Quotes refresh every minute while this page is open." : "搜尋股票、點選自選股列，再請 Golem 分析。頁面停留時每分鐘自動刷新行情。"}</p>
+                                <p>{isEnglish ? `Search a symbol, select a watchlist row, then ask Golem. Quote preference is ${quotePreference}; current tier refreshes every ${Math.round(refreshIntervalMs / 1000)} seconds.` : `搜尋加密貨幣、點選自選股列，再請 Golem 分析。交易對偏好為 ${quotePreference}，目前會員層級每 ${Math.round(refreshIntervalMs / 1000)} 秒刷新。`}</p>
+                                <p>{isEnglish ? "This board is not a second-level feed. For sub-second/second-level execution, use professional exchange trading software." : "本看板非秒級行情來源；若需秒級或亞秒級執行，請改用專業交易所交易軟體。"}</p>
+                                <p>{isEnglish ? "Sponsor refresh is capped at 15 seconds to avoid upstream IP blocking." : "為避免資料源封鎖 IP，Sponsor 更新上限固定為每 15 秒一次。"}</p>
                             </div>
                         </CardContent>
                     </Card>
@@ -984,8 +1448,8 @@ export default function StockAnalysisPage() {
                         <CardContent className="p-3 text-xs leading-5 text-muted-foreground">
                             <div className="font-semibold text-foreground">{isEnglish ? "Golem commands" : "Golem 指令"}</div>
                             <div className="mt-1 grid gap-1 sm:grid-cols-2">
-                                <code className="rounded-md bg-secondary px-2 py-1">/stockboard 2330</code>
-                                <code className="rounded-md bg-secondary px-2 py-1">分析台積電股市看板</code>
+                                <code className="rounded-md bg-secondary px-2 py-1">/cryptoboard BTC ETH SOL</code>
+                                <code className="rounded-md bg-secondary px-2 py-1">分析 BTC ETH 幣市看板</code>
                             </div>
                         </CardContent>
                     </Card>
@@ -994,7 +1458,7 @@ export default function StockAnalysisPage() {
                             <Newspaper className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
                             <div className="space-y-1 text-xs leading-5 text-muted-foreground">
                                 <div className="font-semibold text-foreground">{isEnglish ? "News policy" : "新聞規則"}</div>
-                                <p>{isEnglish ? "News search is Chinese-first, merges Yahoo/Google/DuckDuckGo sources, and filters the latest 14 days." : "新聞搜尋中文優先，會合併 Yahoo、Google、DuckDuckGo 來源，並過濾最近 14 天。"}</p>
+                                <p>{isEnglish ? "News search is Chinese-first, merges Yahoo/Google/DuckDuckGo sources, filters the latest 14 days, refreshes on symbol switch, and then hourly." : "新聞搜尋中文優先，會合併 Yahoo、Google、DuckDuckGo 來源，過濾最近 14 天；切換幣種時立即刷新，之後每小時更新。"}</p>
                             </div>
                         </CardContent>
                     </Card>
@@ -1005,7 +1469,7 @@ export default function StockAnalysisPage() {
                     <Card className="rounded-lg border-border/80">
                         <CardHeader className="pb-3">
                             <CardDescription>{isEnglish ? "Symbol Search" : "自選股搜尋"}</CardDescription>
-                            <CardTitle className="text-xl">{isEnglish ? "Add Taiwan or US stocks" : "加入台股或美股"}</CardTitle>
+                            <CardTitle className="text-xl">{isEnglish ? "Add crypto symbols" : "加入加密貨幣代號"}</CardTitle>
                         </CardHeader>
                         <CardContent className="space-y-3">
                             <form
@@ -1020,7 +1484,7 @@ export default function StockAnalysisPage() {
                                     <input
                                         value={query}
                                         onChange={(event) => setQuery(event.target.value)}
-                                        placeholder={isEnglish ? "2330, AAPL, TSM..." : "2330、AAPL、TSM..."}
+                                        placeholder={isEnglish ? "BTC, ETH, SOL..." : "BTC、ETH、SOL..."}
                                         className="h-10 w-full rounded-lg border border-border bg-background pl-9 pr-3 text-sm outline-none transition-colors focus:border-primary"
                                     />
                                 </label>
@@ -1037,7 +1501,7 @@ export default function StockAnalysisPage() {
                                             <span className="ml-2 text-muted-foreground">{searchPreview.name}</span>
                                         </span>
                                         <span className="shrink-0 rounded-md bg-background/70 px-2 py-1 text-xs text-muted-foreground">
-                                            {searchPreview.market === "tw" ? (isEnglish ? "Taiwan" : "台股") : (isEnglish ? "US" : "美股")}
+                                            {isEnglish ? "Crypto" : "加密貨幣"}
                                             {searchPreview.exchange ? ` · ${searchPreview.exchange}` : ""}
                                         </span>
                                     </div>
@@ -1072,7 +1536,7 @@ export default function StockAnalysisPage() {
                                     </div>
                                 ) : (
                                     <div className="flex h-32 items-center justify-center px-4 text-center text-sm leading-6 text-muted-foreground">
-                                        {isEnglish ? "Search by symbol or company name. Taiwan numeric symbols automatically use .TW." : "可搜尋代號或公司名稱。台股數字代號會自動轉成 .TW。"}
+                                        {isEnglish ? `Search by symbol or coin name. Inputs like BTC/ETH auto-normalize to -${quotePreference}.` : `可搜尋代號或幣種名稱。像 BTC/ETH 會自動正規化成 -${quotePreference}。`}
                                     </div>
                                 )}
                             </div>
@@ -1196,27 +1660,67 @@ export default function StockAnalysisPage() {
                             </div>
                             <div className="grid gap-3 sm:grid-cols-4">
                                 {[
-                                    { label: "SMA 5", value: formatNumber(indicators?.sma5, localeCode) },
-                                    { label: "SMA 20", value: formatNumber(indicators?.sma20, localeCode) },
-                                    { label: "RSI 14", value: formatNumber(indicators?.rsi14, localeCode, 1) },
-                                    { label: "MACD", value: formatNumber(indicators?.macd, localeCode, 2) },
-                                    { label: isEnglish ? "MACD Signal" : "MACD 訊號", value: formatNumber(indicators?.macdSignal, localeCode, 2) },
-                                    { label: isEnglish ? "MACD Hist" : "MACD 柱", value: formatNumber(indicators?.macdHistogram, localeCode, 2) },
-                                    { label: "KD K", value: formatNumber(indicators?.stochasticK, localeCode, 1) },
-                                    { label: "KD D", value: formatNumber(indicators?.stochasticD, localeCode, 1) },
-                                    { label: isEnglish ? "Volatility" : "年化波動", value: `${formatNumber(indicators?.volatility, localeCode, 1)}%` },
-                                    { label: isEnglish ? "Drawdown" : "最大回撤", value: `${formatNumber(indicators?.maxDrawdown, localeCode, 1)}%` },
-                                    { label: isEnglish ? "Volume Ratio" : "量比", value: `${formatNumber(indicators?.volumeRatio, localeCode, 2)}x` },
-                                    { label: isEnglish ? "Vs SMA20" : "距 SMA20", value: `${formatNumber(indicators?.distanceToSma20Percent, localeCode, 1)}%` },
-                                    { label: isEnglish ? "Day Range" : "日內區間", value: `${formatNumber(selectedQuote?.dayLow, localeCode)} - ${formatNumber(selectedQuote?.dayHigh, localeCode)}` },
-                                    { label: isEnglish ? "52W Range" : "52 週區間", value: `${formatNumber(selectedQuote?.fiftyTwoWeekLow, localeCode)} - ${formatNumber(selectedQuote?.fiftyTwoWeekHigh, localeCode)}` },
+                                    { label: isEnglish ? "Trend · SMA20" : "趨勢 · SMA20", value: formatNumber(indicators?.sma20, localeCode), locked: false },
+                                    { label: "Momentum · RSI14", value: formatNumber(indicators?.rsi14, localeCode, 1), locked: false },
+                                    { label: isEnglish ? "Day Range" : "日內區間", value: `${formatNumber(selectedQuote?.dayLow, localeCode)} - ${formatNumber(selectedQuote?.dayHigh, localeCode)}`, locked: false },
+                                    { label: isEnglish ? "52W Range" : "52 週區間", value: `${formatNumber(selectedQuote?.fiftyTwoWeekLow, localeCode)} - ${formatNumber(selectedQuote?.fiftyTwoWeekHigh, localeCode)}`, locked: false },
+                                    { label: isEnglish ? "Trend · EMA20" : "趨勢 · EMA20", value: formatNumber(indicators?.ema20, localeCode), locked: !canUseAdvancedIndicators },
+                                    { label: isEnglish ? "Trend · EMA50" : "趨勢 · EMA50", value: formatNumber(indicators?.ema50, localeCode), locked: !canUseAdvancedIndicators },
+                                    { label: isEnglish ? "Trend · EMA200" : "趨勢 · EMA200", value: formatNumber(indicators?.ema200, localeCode), locked: !canUseAdvancedIndicators },
+                                    { label: "Trend · MACD", value: formatNumber(indicators?.macd, localeCode, 2), locked: !canUseAdvancedIndicators },
+                                    { label: isEnglish ? "Trend · MACD Signal" : "趨勢 · MACD 訊號", value: formatNumber(indicators?.macdSignal, localeCode, 2), locked: !canUseAdvancedIndicators },
+                                    { label: isEnglish ? "Trend · MACD Hist" : "趨勢 · MACD 柱", value: formatNumber(indicators?.macdHistogram, localeCode, 2), locked: !canUseAdvancedIndicators },
+                                    { label: isEnglish ? "Trend · Vs SMA20" : "趨勢 · 距 SMA20", value: `${formatNumber(indicators?.distanceToSma20Percent, localeCode, 1)}%`, locked: !canUseAdvancedIndicators },
+                                    { label: "Momentum · Stoch K", value: formatNumber(indicators?.stochasticK, localeCode, 1), locked: !canUseAdvancedIndicators },
+                                    { label: "Momentum · Stoch D", value: formatNumber(indicators?.stochasticD, localeCode, 1), locked: !canUseAdvancedIndicators },
+                                    { label: "Momentum · MFI14", value: formatNumber(indicators?.mfi14, localeCode, 1), locked: !canUseAdvancedIndicators },
+                                    { label: isEnglish ? "Volatility · ATR14" : "波動 · ATR14", value: formatNumber(indicators?.atr14, localeCode, 3), locked: !canUseAdvancedIndicators },
+                                    { label: isEnglish ? "Volatility · Boll Mid" : "波動 · 布林中線", value: formatNumber(indicators?.bollingerMiddle, localeCode), locked: !canUseAdvancedIndicators },
+                                    { label: isEnglish ? "Volatility · Boll Upper" : "波動 · 布林上軌", value: formatNumber(indicators?.bollingerUpper, localeCode), locked: !canUseAdvancedIndicators },
+                                    { label: isEnglish ? "Volatility · Boll Lower" : "波動 · 布林下軌", value: formatNumber(indicators?.bollingerLower, localeCode), locked: !canUseAdvancedIndicators },
+                                    { label: isEnglish ? "Volatility · Boll Width" : "波動 · 布林寬度", value: `${formatNumber(indicators?.bollingerWidthPercent, localeCode, 1)}%`, locked: !canUseAdvancedIndicators },
+                                    { label: isEnglish ? "Volatility · Hist Vol" : "波動 · 歷史波動", value: `${formatNumber(indicators?.volatility, localeCode, 1)}%`, locked: !canUseAdvancedIndicators },
+                                    { label: isEnglish ? "Volatility · Drawdown" : "波動 · 最大回撤", value: `${formatNumber(indicators?.maxDrawdown, localeCode, 1)}%`, locked: !canUseAdvancedIndicators },
+                                    { label: isEnglish ? "Structure · Donchian High" : "結構 · 唐奇安高", value: formatNumber(indicators?.donchianUpper20, localeCode), locked: !canUseAdvancedIndicators },
+                                    { label: isEnglish ? "Structure · Donchian Low" : "結構 · 唐奇安低", value: formatNumber(indicators?.donchianLower20, localeCode), locked: !canUseAdvancedIndicators },
+                                    { label: isEnglish ? "Structure · Donchian Mid" : "結構 · 唐奇安中", value: formatNumber(indicators?.donchianMiddle20, localeCode), locked: !canUseAdvancedIndicators },
+                                    { label: isEnglish ? "Structure · Dist to 52W High" : "結構 · 距 52W 高點", value: `${formatNumber(indicators?.distanceTo52wHighPercent, localeCode, 1)}%`, locked: !canUseAdvancedIndicators },
+                                    { label: isEnglish ? "Structure · Dist to 52W Low" : "結構 · 距 52W 低點", value: `${formatNumber(indicators?.distanceTo52wLowPercent, localeCode, 1)}%`, locked: !canUseAdvancedIndicators },
+                                    { label: isEnglish ? "Volume/Flow · OBV" : "量能/流向 · OBV", value: formatCompact(indicators?.obv, localeCode), locked: !canUseAdvancedIndicators },
+                                    { label: isEnglish ? "Volume/Flow · Vol Ratio" : "量能/流向 · 量比", value: `${formatNumber(indicators?.volumeRatio, localeCode, 2)}x`, locked: !canUseAdvancedIndicators },
+                                    { label: isEnglish ? "Volume/Flow · Vol Z-Score" : "量能/流向 · 量能 Z 分數", value: formatNumber(indicators?.volumeZScore20, localeCode, 2), locked: !canUseAdvancedIndicators },
+                                    { label: isEnglish ? "Volume/Flow · Avg Vol(20)" : "量能/流向 · 20 日均量", value: formatCompact(indicators?.avgVolume20, localeCode), locked: !canUseAdvancedIndicators },
                                 ].map((item) => (
-                                    <div key={item.label} className="rounded-lg border border-border bg-background p-3">
-                                        <div className="text-xs text-muted-foreground">{item.label}</div>
-                                        <div className="mt-1 text-base font-semibold">{item.value}</div>
+                                    <div
+                                        key={item.label}
+                                        className={cn(
+                                            "rounded-lg border p-3",
+                                            item.locked
+                                                ? "border-border/40 bg-muted/40 opacity-60"
+                                                : "border-border bg-background"
+                                        )}
+                                    >
+                                        <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
+                                            <span>{item.label}</span>
+                                            {item.locked && (
+                                                <span className="rounded-full border border-amber-400/60 bg-amber-400/20 px-2 py-0.5 text-[10px] text-amber-200">
+                                                    {isEnglish ? "Sponsor Unlock" : "贊助解鎖"}
+                                                </span>
+                                            )}
+                                        </div>
+                                        <div className={cn("mt-1 text-base font-semibold", item.locked && "blur-[1px]")}>
+                                            {item.locked ? "•••" : item.value}
+                                        </div>
                                     </div>
                                 ))}
                             </div>
+                            {!canUseAdvancedIndicators && (
+                                <div className="rounded-lg border border-amber-400/40 bg-amber-400/10 p-3 text-sm text-amber-200">
+                                    {isEnglish
+                                        ? "Advanced indicators are Sponsor-only. Upgrade to unlock full technical analysis."
+                                        : "進階技術指標為贊助會員專屬（至少 5 美金），升級後可解鎖完整技術分析。"}
+                                </div>
+                            )}
                         </CardContent>
                     </Card>
 
@@ -1231,7 +1735,7 @@ export default function StockAnalysisPage() {
                         </CardHeader>
                         <CardContent>
                             <div className="h-[280px] min-h-[280px] min-w-0">
-                                {isMounted ? (
+                                {(
                                     <ResponsiveContainer width="100%" height="100%" minWidth={1} minHeight={1}>
                                         <BarChart data={chartData.slice(-24)} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
                                             <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
@@ -1249,7 +1753,7 @@ export default function StockAnalysisPage() {
                                             <Bar dataKey="volume" fill="#f59e0b" radius={[6, 6, 0, 0]} />
                                         </BarChart>
                                     </ResponsiveContainer>
-                                ) : null}
+                                )}
                             </div>
                             <div className="mt-4 grid grid-cols-2 gap-3">
                                 {[
@@ -1277,21 +1781,23 @@ export default function StockAnalysisPage() {
                             <CardDescription>{isEnglish ? "Chinese-first news" : "中文優先新聞"}</CardDescription>
                             <CardTitle className="flex items-center gap-2 text-xl">
                                 <Newspaper className="h-5 w-5 text-primary" />
-                                {selectedQuote ? `${selectedQuote.symbol} · ${selectedQuote.name}` : (isEnglish ? "Stock News" : "個股新聞")}
+                                {selectedQuote ? `${selectedQuote.symbol} · ${selectedQuote.name}` : (isEnglish ? "Crypto News" : "幣種新聞")}
                             </CardTitle>
                         </CardHeader>
                         <CardContent className="space-y-3">
-                            <div className="rounded-lg border border-border bg-background p-3 text-xs leading-5 text-muted-foreground">
-                                {news?.dateWindow
-                                    ? `${isEnglish ? "Query" : "查詢"}: ${news.query} · ${news.dateWindow.since} ~ ${news.dateWindow.until}`
-                                    : isEnglish ? "News query adds a 14-day date window." : "新聞查詢會加入兩週內日期條件。"}
-                            </div>
-                            {isLoadingNews ? (
+                            {isSponsorTier ? (
+                                <>
+                                    <div className="rounded-lg border border-border bg-background p-3 text-xs leading-5 text-muted-foreground">
+                                        {news?.dateWindow
+                                            ? `${isEnglish ? "Query" : "查詢"}: ${news.query} · ${news.dateWindow.since} ~ ${news.dateWindow.until}`
+                                            : isEnglish ? "News query adds a 14-day date window." : "新聞查詢會加入兩週內日期條件。"}
+                                    </div>
+                                    {isLoadingNews ? (
                                 <div className="flex h-24 items-center justify-center text-sm text-muted-foreground">
                                     <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                                     {isEnglish ? "Searching news..." : "搜尋新聞中..."}
                                 </div>
-                            ) : news?.results?.length ? (
+                                    ) : news?.results?.length ? (
                                 <div className="max-h-[420px] space-y-2 overflow-y-auto pr-1">
                                     {news.results.map((item) => (
                                         <a
@@ -1311,10 +1817,48 @@ export default function StockAnalysisPage() {
                                         </a>
                                     ))}
                                 </div>
-                            ) : (
+                                    ) : (
                                 <div className="rounded-lg border border-border bg-secondary/25 p-4 text-center text-sm text-muted-foreground">
                                     {isEnglish ? "No recent Chinese search results found." : "目前沒有找到兩週內中文優先搜尋結果。"}
                                 </div>
+                                    )}
+                                </>
+                            ) : (
+                                <>
+                                    <div className="rounded-lg border border-amber-400/40 bg-amber-400/10 p-3 text-xs leading-5 text-amber-200">
+                                        {isEnglish ? "Sponsor-only module (USD $5+): News intelligence." : "贊助會員專屬模組（至少 5 美金）：新聞智慧摘要。"}
+                                    </div>
+                                    <div className="max-h-[420px] space-y-2 overflow-y-auto pr-1">
+                                        {[1, 2, 3].map((idx) => (
+                                            <div
+                                                key={idx}
+                                                className="rounded-lg border border-border/40 bg-muted/40 p-3 opacity-65"
+                                            >
+                                                <div className="flex items-center justify-between">
+                                                    <div className="h-4 w-3/4 rounded bg-muted-foreground/20" />
+                                                    <span className="rounded-full border border-amber-400/60 bg-amber-400/20 px-2 py-0.5 text-[10px] text-amber-200">
+                                                        {isEnglish ? "Sponsor Unlock" : "贊助解鎖"}
+                                                    </span>
+                                                </div>
+                                                <div className="mt-2 h-3 w-full rounded bg-muted-foreground/20" />
+                                                <div className="mt-1 h-3 w-5/6 rounded bg-muted-foreground/20" />
+                                            </div>
+                                        ))}
+                                    </div>
+                                    <div className="mt-1">
+                                        <Button
+                                            className="bg-amber-400 text-amber-950 hover:bg-amber-300"
+                                            onClick={() => openAccessGate(
+                                                isEnglish ? "Unlock Crypto News Intelligence" : "解鎖加密新聞智慧摘要",
+                                                isEnglish ? "Sponsor (USD $5+) unlocks news intelligence and full advanced indicator suite." : "升級贊助會員（至少 5 美金）可解鎖新聞智慧摘要與完整進階指標。",
+                                                1
+                                            )}
+                                        >
+                                            <Coffee className="mr-2 h-4 w-4" />
+                                            {isEnglish ? "Upgrade to Sponsor (USD $5+)" : "升級贊助會員（5 美金起）"}
+                                        </Button>
+                                    </div>
+                                </>
                             )}
                         </CardContent>
                     </Card>
@@ -1326,7 +1870,7 @@ export default function StockAnalysisPage() {
                         <CardHeader className="gap-3 pb-4 md:flex-row md:items-center md:justify-between md:space-y-0">
                             <div>
                                 <CardDescription>{isEnglish ? "Watchlist" : "自選股"}</CardDescription>
-                                <CardTitle className="text-xl">{isEnglish ? "Live Taiwan and US symbols" : "即時台股與美股標的"}</CardTitle>
+                                <CardTitle className="text-xl">{isEnglish ? "Live Crypto Symbols" : "即時加密貨幣標的"}</CardTitle>
                             </div>
                             <div className="text-sm text-muted-foreground">
                                 {lastUpdatedAt ? `${isEnglish ? "Updated" : "更新"} ${getFreshnessLabel(lastUpdatedAt, localeCode)}` : ""}
@@ -1370,7 +1914,7 @@ export default function StockAnalysisPage() {
                                             </td>
                                             <td className="py-3">
                                                 <span className="rounded-md border border-border bg-background px-2 py-1 text-xs text-muted-foreground">
-                                                    {quote.market === "tw" ? (isEnglish ? "Taiwan" : "台股") : (isEnglish ? "US" : "美股")}
+                                                    {isEnglish ? "Crypto" : "加密貨幣"}
                                                 </span>
                                             </td>
                                             <td className="py-3 text-right font-semibold">{quote.currency} {formatNumber(quote.price, localeCode)}</td>
@@ -1422,6 +1966,143 @@ export default function StockAnalysisPage() {
                     </Card>
                 </section>
             </div>
+            <Dialog open={isBenefitsModalOpen} onOpenChange={setIsBenefitsModalOpen}>
+                <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-3xl">
+                    <DialogHeader>
+                        <DialogTitle>{isEnglish ? "Crypto Membership Benefits" : "Crypto 會員福利表"}</DialogTitle>
+                        <DialogDescription>
+                            {isEnglish
+                                ? "Sponsor starts at USD $5. Crypto rules only."
+                                : "贊助會員門檻為至少 5 美金。僅適用於 Crypto 功能。"}
+                        </DialogDescription>
+                    </DialogHeader>
+                    <div className="space-y-4">
+                        <div className="text-sm text-muted-foreground">
+                            {isEnglish ? "Current tier" : "目前層級"}:
+                            <span className="ml-2 font-semibold text-foreground">{membership?.tier || "visitor"}</span>
+                            <span className="ml-2">{isEnglish ? `Refresh ${Math.round(refreshIntervalMs / 1000)}s` : `刷新 ${Math.round(refreshIntervalMs / 1000)} 秒`}</span>
+                            <span className="ml-2">{isEnglish ? `AI quota reset: ${nextQuotaResetUtc} UTC` : `AI 配額重置：${nextQuotaResetUtc} UTC`}</span>
+                        </div>
+                        <div className="overflow-x-auto">
+                            <table className="w-full min-w-[720px] text-sm">
+                                <thead>
+                                    <tr className="border-b border-border text-left">
+                                        <th className="py-2 pr-3">{isEnglish ? "Feature" : "項目"}</th>
+                                        <th className="py-2 pr-3">Visitor</th>
+                                        <th className="py-2 pr-3">General</th>
+                                        <th className="py-2 pr-3">Sponsor</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr className="border-b border-border/60">
+                                        <td className="py-2 pr-3">{isEnglish ? "AI analysis quota/day" : "AI 分析配額/日"}</td>
+                                        <td className="py-2 pr-3">0</td>
+                                        <td className="py-2 pr-3">3</td>
+                                        <td className="py-2 pr-3">120</td>
+                                    </tr>
+                                    <tr className="border-b border-border/60">
+                                        <td className="py-2 pr-3">{isEnglish ? "Watchlist limit" : "自選上限"}</td>
+                                        <td className="py-2 pr-3">3</td>
+                                        <td className="py-2 pr-3">5</td>
+                                        <td className="py-2 pr-3">100</td>
+                                    </tr>
+                                    <tr className="border-b border-border/60">
+                                        <td className="py-2 pr-3">{isEnglish ? "Refresh interval" : "最快更新頻率"}</td>
+                                        <td className="py-2 pr-3">60s</td>
+                                        <td className="py-2 pr-3">30s</td>
+                                        <td className="py-2 pr-3">15s (cap)</td>
+                                    </tr>
+                                    <tr>
+                                        <td className="py-2 pr-3">{isEnglish ? "News / Advanced indicators" : "新聞 / 進階指標"}</td>
+                                        <td className="py-2 pr-3">{isEnglish ? "Locked" : "鎖定"}</td>
+                                        <td className="py-2 pr-3">{isEnglish ? "Locked" : "鎖定"}</td>
+                                        <td className="py-2 pr-3">{isEnglish ? "Enabled" : "開放"}</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                        <div className="text-xs text-muted-foreground">
+                            {isEnglish
+                                ? "Sponsor starts at USD $5, and refresh is capped at 15 seconds to protect upstream APIs."
+                                : "贊助會員門檻為至少 5 美金，且刷新上限為 15 秒，以保護上游資料源。"}
+                        </div>
+                    </div>
+                </DialogContent>
+            </Dialog>
+            <Dialog open={isAccountModalOpen} onOpenChange={setIsAccountModalOpen}>
+                <DialogContent className="sm:max-w-lg">
+                    <DialogHeader>
+                        <DialogTitle>{isEnglish ? "Membership Account" : "會員帳號"}</DialogTitle>
+                        <DialogDescription>
+                            {isEnglish ? "Use your email and password to register or login." : "使用 Email 與密碼進行註冊或登入。"}
+                        </DialogDescription>
+                    </DialogHeader>
+                    <div className="space-y-4">
+                        <div className="inline-flex rounded-lg border border-border bg-card p-1">
+                            {([
+                                { key: "login" as const, label: isEnglish ? "Login" : "登入" },
+                                { key: "register" as const, label: isEnglish ? "Register" : "註冊" },
+                            ]).map((option) => (
+                                <button
+                                    key={option.key}
+                                    type="button"
+                                    onClick={() => setAuthMode(option.key)}
+                                    className={cn(
+                                        "h-9 rounded-md px-3 text-sm font-semibold transition-colors",
+                                        authMode === option.key
+                                            ? "bg-primary text-primary-foreground"
+                                            : "text-muted-foreground hover:bg-accent hover:text-foreground"
+                                    )}
+                                >
+                                    {option.label}
+                                </button>
+                            ))}
+                        </div>
+                        <div className="space-y-2">
+                            <input
+                                type="email"
+                                value={loginEmail}
+                                onChange={(e) => setLoginEmail(e.target.value)}
+                                placeholder={isEnglish ? "Membership email" : "會員 Email"}
+                                className="h-10 w-full rounded-md border border-border bg-background px-3 text-sm"
+                            />
+                            <input
+                                type="password"
+                                value={loginPassword}
+                                onChange={(e) => setLoginPassword(e.target.value)}
+                                placeholder={isEnglish ? "Password" : "密碼"}
+                                className="h-10 w-full rounded-md border border-border bg-background px-3 text-sm"
+                            />
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                            {authMode === "login" ? (
+                                <Button onClick={handleMembershipLogin} disabled={isLoginLoading || !loginEmail.trim() || !loginPassword.trim()}>
+                                    {isLoginLoading ? (isEnglish ? "Logging in..." : "登入中...") : (isEnglish ? "Login" : "登入")}
+                                </Button>
+                            ) : (
+                                <Button onClick={handleMembershipRegister} disabled={isLoginLoading || !loginEmail.trim() || !loginPassword.trim()}>
+                                    {isLoginLoading ? (isEnglish ? "Registering..." : "註冊中...") : (isEnglish ? "Register" : "註冊")}
+                                </Button>
+                            )}
+                            {membership?.authenticated && (
+                                <Button variant="secondary" onClick={handleMembershipLogout}>
+                                    {isEnglish ? "Logout" : "登出"}
+                                </Button>
+                            )}
+                            <Button
+                                variant="outline"
+                                className="border-amber-400/50 text-amber-300 hover:bg-amber-400/10 hover:text-amber-200"
+                                asChild
+                            >
+                                <a href={SUPPORT_URL} target="_blank" rel="noreferrer">
+                                    <Coffee className="mr-2 h-4 w-4" />
+                                    {isEnglish ? "Upgrade to Sponsor (USD $5+)" : "升級贊助會員（5 美金起）"}
+                                </a>
+                            </Button>
+                        </div>
+                    </div>
+                </DialogContent>
+            </Dialog>
         </div>
     );
 }

@@ -13,7 +13,7 @@ const ATOMIC_TOOLS = {
     // 記憶與學習
     memory:  ['memory', 'adaptive-learning', 'session-search', 'reflection'],
     // 知識管理
-    knowledge: ['wiki', 'log-archive', 'log-reader', 'stock-dashboard'],
+    knowledge: ['wiki', 'log-archive', 'log-reader', 'stock-dashboard', 'crypto-dashboard'],
     // 程式與演化
     code:    ['evolution', 'code-wizard'],
     // 網路與搜尋

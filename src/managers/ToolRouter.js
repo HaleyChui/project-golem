@@ -59,6 +59,7 @@ function inferIntentBoosts(text) {
     add(/(代理|agent|multi-agent|協作|委派|delegate)/i, ['multi-agent', 'delegate-task']);
     add(/(檔案|附件|參考資料|reference)/i, ['reference-files']);
     add(/(股票|股市|股價|台股|美股|個股|行情|看板|stockboard|stock dashboard|market analysis|台積電|聯發科|鴻海|輝達|nvda|aapl|tsm)/i, ['stock-dashboard']);
+    add(/(加密貨幣|幣市|虛擬貨幣|bitcoin|btc|ethereum|eth|solana|sol|xrp|doge|cryptoboard|crypto board|crypto market|btc-usdt|eth-usdc|usdt|usdc)/i, ['crypto-dashboard']);
 
     return boosts;
 }

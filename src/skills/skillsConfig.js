@@ -25,6 +25,7 @@ const MANDATORY_SKILLS = [
     'session-search',  // 🔍 Hermes-inspired: 歷史對話語意搜尋
     'reference-files',
     'stock-dashboard',
+    'crypto-dashboard',
     'collab-calendar',
     'chrome-devtools',
     'duckduckgo-search',

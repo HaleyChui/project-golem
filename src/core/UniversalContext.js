@@ -2,6 +2,43 @@ const { CONFIG } = require('../config');
 const MessageManager = require('./MessageManager');
 const { ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 
+function buildDiscordComponentsFromInlineKeyboard(inlineKeyboard) {
+    const rows = (Array.isArray(inlineKeyboard) ? inlineKeyboard : [])
+        .filter((row) => Array.isArray(row) && row.length > 0)
+        .slice(0, 5);
+    if (rows.length === 0) return null;
+
+    const canUseBuilders =
+        typeof ActionRowBuilder === 'function' &&
+        typeof ButtonBuilder === 'function' &&
+        ButtonStyle && typeof ButtonStyle.Primary !== 'undefined';
+
+    if (canUseBuilders) {
+        return rows.map((row) => {
+            const actionRow = new ActionRowBuilder();
+            row.slice(0, 5).forEach((btn) => {
+                actionRow.addComponents(
+                    new ButtonBuilder()
+                        .setCustomId(String(btn.callback_data || 'RPG_STATUS').slice(0, 100))
+                        .setLabel(String(btn.text || '選項').slice(0, 80))
+                        .setStyle(ButtonStyle.Primary)
+                );
+            });
+            return actionRow;
+        });
+    }
+
+    return rows.map((row) => ({
+        type: 1,
+        components: row.slice(0, 5).map((btn) => ({
+            type: 2,
+            style: 1,
+            custom_id: String(btn.callback_data || 'RPG_STATUS').slice(0, 100),
+            label: String(btn.text || '選項').slice(0, 80)
+        }))
+    }));
+}
+
 // ============================================================
 // 🔌 Universal Context (通用語境層)
 // ============================================================
@@ -193,22 +230,8 @@ class UniversalContext {
             try {
                 const payload = { content, flags: 64 };
                 if (options && options.reply_markup && options.reply_markup.inline_keyboard) {
-                    const rows = options.reply_markup.inline_keyboard
-                        .filter((row) => Array.isArray(row) && row.length > 0)
-                        .slice(0, 5)
-                        .map((row) => {
-                            const actionRow = new ActionRowBuilder();
-                            row.slice(0, 5).forEach((btn) => {
-                                actionRow.addComponents(
-                                    new ButtonBuilder()
-                                        .setCustomId(String(btn.callback_data || 'RPG_STATUS'))
-                                        .setLabel(String(btn.text || '選項'))
-                                        .setStyle(ButtonStyle.Primary)
-                                );
-                            });
-                            return actionRow;
-                        });
-                    if (rows.length > 0) payload.components = rows;
+                    const rows = buildDiscordComponentsFromInlineKeyboard(options.reply_markup.inline_keyboard);
+                    if (rows && rows.length > 0) payload.components = rows;
                 }
                 if (!this.event.deferred && !this.event.replied) {
                     return await this.event.reply(payload);

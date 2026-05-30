@@ -24,6 +24,7 @@ const registerDiaryRoutes = require('./routes/api.diary');
 const registerPromptPoolRoutes = require('./routes/api.prompt-pool');
 const registerRpgRoutes = require('./routes/api.rpg');
 const registerStockRoutes = require('./routes/api.stocks');
+const registerCryptoRoutes = require('./routes/api.crypto');
 const registerReferenceFileRoutes = require('./routes/api.reference-files');
 const registerCalendarRoutes = require('./routes/api.calendar');
 
@@ -215,6 +216,7 @@ class WebServer {
             registerPromptPoolRoutes,
             registerRpgRoutes,
             registerStockRoutes,
+            registerCryptoRoutes,
             registerReferenceFileRoutes,
             registerCalendarRoutes,
         ];

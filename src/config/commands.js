@@ -146,6 +146,9 @@ module.exports = [
     { command: '/stock', description: '股市分析指令別名，等同於 /stocks。' },
     { command: '/stockboard', description: '開啟股市看板式分析上下文，等同於 /stocks。' },
     { command: '/stock-dashboard', description: '開啟股市 dashboard 分析上下文，等同於 /stocks。' },
+    { command: '/crypto', description: '加密貨幣分析指令別名，等同於 /cryptoboard。' },
+    { command: '/cryptos', description: '建立加密貨幣分析上下文（BTC-USDT、ETH-USDC、SOL-USDT 等）。' },
+    { command: '/cryptoboard', description: '開啟加密貨幣 dashboard 分析上下文（幣對/技術/新聞/風險）。' },
     {
         command: '/rpg',
         description: 'Golem 原生文字 RPG 模式控制（啟動/關閉/狀態/會員等級）。',
